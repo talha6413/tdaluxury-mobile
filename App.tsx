@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { StatusBar } from "expo-status-bar";
 import {
-  SafeAreaView, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity,
-  View,
+  ActivityIndicator, Alert, SafeAreaView, ScrollView, StyleSheet, Text,
+  TextInput, TouchableOpacity, View,
 } from "react-native";
 import {
   CalendarDays, ChevronRight, CircleDollarSign, Clock3, Home, LogIn,
@@ -15,6 +15,7 @@ import { isSupabaseReady, supabase } from "./src/lib/supabase";
 
 type Role = "customer" | "staff" | "admin";
 type Tab = "home" | "appointments" | "customers" | "finance" | "profile";
+type Customer = { id: string; full_name: string; phone: string; email: string; notes: string; active: boolean };
 
 const appointments = [
   { time: "10:00", name: "Elif Yılmaz", service: "Lazer Epilasyon", status: "Onaylandı" },
@@ -119,13 +120,67 @@ function Dashboard({ role, navigate }: { role: Role; navigate: (t: Tab) => void 
 
 function Appointments() { return <><PageTitle title="Randevular" subtitle="19 Temmuz Pazar" action="Yeni randevu" /><View style={styles.search}><Search size={18} color={colors.muted} /><TextInput placeholder="Randevu ara" placeholderTextColor={colors.muted} style={styles.searchInput} /></View>{appointments.map((item) => <AppointmentRow item={item} key={item.time} />)}</>; }
 
-function Customers() { const customers = [["EY", "Elif Yılmaz", "Lazer · 6 seans kaldı"], ["ZK", "Zeynep Kaya", "Cilt bakımı · Aktif"], ["DA", "Derya Aydın", "Kirpik lifting"], ["MA", "Merve Arslan", "Kalıcı makyaj"]]; return <><PageTitle title="Müşteriler" subtitle="5.000+ müşteri kaydı" action="Yeni müşteri" /><View style={styles.search}><Search size={18} color={colors.muted} /><TextInput placeholder="İsim veya telefon ara" placeholderTextColor={colors.muted} style={styles.searchInput} /></View>{customers.map(([initials, name, info]) => <TouchableOpacity style={styles.customer} key={name}><View style={styles.avatar}><Text style={styles.avatarText}>{initials}</Text></View><View style={styles.grow}><Text style={styles.rowTitle}>{name}</Text><Text style={styles.rowSub}>{info}</Text></View><ChevronRight color={colors.muted} size={19} /></TouchableOpacity>)}</>; }
+function Customers() {
+  const [customers, setCustomers] = useState<Customer[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [showForm, setShowForm] = useState(false);
+  const [query, setQuery] = useState("");
+  const [fullName, setFullName] = useState("");
+  const [phone, setPhone] = useState("");
+  const [email, setEmail] = useState("");
+  const [notes, setNotes] = useState("");
+  const [formError, setFormError] = useState("");
+
+  async function loadCustomers() {
+    if (!supabase) { setLoading(false); return; }
+    setLoading(true);
+    const { data, error } = await supabase.from("customers").select("id,full_name,phone,email,notes,active").eq("active", true).order("full_name");
+    setLoading(false);
+    if (error) { Alert.alert("Müşteriler yüklenemedi", error.message); return; }
+    setCustomers((data ?? []) as Customer[]);
+  }
+
+  useEffect(() => { void loadCustomers(); }, []);
+
+  async function saveCustomer() {
+    if (!supabase) { setFormError("Supabase bağlantısı hazır değil."); return; }
+    const name = fullName.trim();
+    const mobile = phone.trim();
+    if (!name || !mobile) { setFormError("Ad soyad ve telefon zorunludur."); return; }
+    setSaving(true); setFormError("");
+    const { data, error } = await supabase.from("customers").insert({ full_name: name, phone: mobile, email: email.trim(), notes: notes.trim() }).select("id,full_name,phone,email,notes,active").single();
+    setSaving(false);
+    if (error) { setFormError(error.message); return; }
+    setCustomers(current => [...current, data as Customer].sort((a, b) => a.full_name.localeCompare(b.full_name, "tr")));
+    setFullName(""); setPhone(""); setEmail(""); setNotes(""); setShowForm(false);
+    Alert.alert("Müşteri kaydedildi", `${name} müşteri listenize eklendi.`);
+  }
+
+  const filtered = customers.filter(customer => `${customer.full_name} ${customer.phone}`.toLocaleLowerCase("tr").includes(query.toLocaleLowerCase("tr").trim()));
+  const initials = (name: string) => name.split(/\s+/).slice(0, 2).map(part => part[0]).join("").toLocaleUpperCase("tr");
+
+  return <>
+    <PageTitle title="Müşteriler" subtitle={`${customers.length} aktif kayıt`} action={showForm ? "Formu kapat" : "Yeni müşteri"} onAction={() => { setFormError(""); setShowForm(value => !value); }} />
+    {showForm && <View style={styles.customerForm}>
+      <Text style={styles.formTitle}>Yeni müşteri kartı</Text>
+      <Text style={styles.inputLabel}>Ad soyad *</Text><TextInput value={fullName} onChangeText={setFullName} placeholder="Örn. Defne Dayan" placeholderTextColor={colors.muted} style={styles.formField} autoCapitalize="words" />
+      <Text style={styles.inputLabel}>Telefon *</Text><TextInput value={phone} onChangeText={setPhone} placeholder="05xx xxx xx xx" placeholderTextColor={colors.muted} style={styles.formField} keyboardType="phone-pad" />
+      <Text style={styles.inputLabel}>E-posta</Text><TextInput value={email} onChangeText={setEmail} placeholder="musteri@eposta.com" placeholderTextColor={colors.muted} style={styles.formField} keyboardType="email-address" autoCapitalize="none" />
+      <Text style={styles.inputLabel}>Not</Text><TextInput value={notes} onChangeText={setNotes} placeholder="Tercihler veya kısa not" placeholderTextColor={colors.muted} style={[styles.formField, styles.notesField]} multiline />
+      {!!formError && <Text style={styles.error}>{formError}</Text>}
+      <TouchableOpacity style={styles.primaryButton} onPress={() => void saveCustomer()} disabled={saving}>{saving ? <ActivityIndicator color={colors.background} /> : <Text style={styles.primaryButtonText}>MÜŞTERİYİ KAYDET</Text>}</TouchableOpacity>
+    </View>}
+    <View style={styles.search}><Search size={18} color={colors.muted} /><TextInput value={query} onChangeText={setQuery} placeholder="İsim veya telefon ara" placeholderTextColor={colors.muted} style={styles.searchInput} /></View>
+    {loading ? <View style={styles.loading}><ActivityIndicator color={colors.gold} /><Text style={styles.emptyText}>Müşteriler yükleniyor…</Text></View> : filtered.length === 0 ? <View style={styles.emptyState}><UsersRound color={colors.gold} size={30} /><Text style={styles.emptyTitle}>{query ? "Eşleşen müşteri yok" : "İlk müşterinizi ekleyin"}</Text><Text style={styles.emptyText}>{query ? "Arama ifadesini değiştirin." : "Yeni müşteri düğmesiyle gerçek müşteri kaydı oluşturabilirsiniz."}</Text></View> : filtered.map(customer => <TouchableOpacity style={styles.customer} key={customer.id}><View style={styles.avatar}><Text style={styles.avatarText}>{initials(customer.full_name)}</Text></View><View style={styles.grow}><Text style={styles.rowTitle}>{customer.full_name}</Text><Text style={styles.rowSub}>{customer.phone}{customer.email ? ` · ${customer.email}` : ""}</Text></View><ChevronRight color={colors.muted} size={19} /></TouchableOpacity>)}
+  </>;
+}
 
 function Finance() { return <><PageTitle title="Kasa & Finans" subtitle="Günlük işletme özeti" action="Tahsilat ekle" /><View style={styles.balance}><Text style={styles.balanceLabel}>BUGÜNKÜ TAHSİLAT</Text><Text style={styles.balanceValue}>₺18.450</Text><Text style={styles.balanceHint}>Düne göre %12 artış</Text></View><View style={styles.metricGrid}><View style={styles.metric}><Text style={styles.metricValue}>₺12.250</Text><Text style={styles.metricLabel}>Nakit</Text></View><View style={styles.metric}><Text style={styles.metricValue}>₺6.200</Text><Text style={styles.metricLabel}>Kart</Text></View><View style={styles.metric}><Text style={styles.metricValue}>₺3.500</Text><Text style={styles.metricLabel}>Bekleyen</Text></View></View><SectionTitle title="Son hareketler" />{[["Elif Yılmaz", "Lazer paket ödemesi", "+₺5.000"], ["Zeynep Kaya", "Cilt bakımı", "+₺1.750"], ["Salon gideri", "Sarf malzeme", "-₺820"]].map(([name, info, amount]) => <View style={styles.transaction} key={name}><View style={styles.transactionIcon}><CircleDollarSign size={19} color={colors.gold} /></View><View style={styles.grow}><Text style={styles.rowTitle}>{name}</Text><Text style={styles.rowSub}>{info}</Text></View><Text style={[styles.amount, String(amount).startsWith("-") && styles.negative]}>{amount}</Text></View>)}</>; }
 
 function Profile({ role, signOut }: { role: Role; signOut: () => void }) { return <><PageTitle title="Hesabım" subtitle={`${roleLabels[role]} hesabı`} /><View style={styles.profileCard}><View style={styles.profileAvatar}><Text style={styles.profileInitial}>T</Text></View><Text style={styles.profileName}>Talha</Text><Text style={styles.rowSub}>talha6413@gmail.com</Text></View>{["Bildirim ayarları", "Yetkiler ve personel", "İşletme ayarları", "Güvenlik", "Yardım ve destek"].map(x => <TouchableOpacity style={styles.setting} key={x}><Settings size={18} color={colors.gold} /><Text style={styles.settingText}>{x}</Text><ChevronRight size={18} color={colors.muted} /></TouchableOpacity>)}<TouchableOpacity style={styles.logout} onPress={signOut}><Text style={styles.logoutText}>Güvenli çıkış yap</Text></TouchableOpacity></>; }
 
-function PageTitle({ title, subtitle, action }: { title: string; subtitle: string; action?: string }) { return <View style={styles.pageTitle}><View><Text style={styles.pageHeading}>{title}</Text><Text style={styles.pageSubtitle}>{subtitle}</Text></View>{action && <TouchableOpacity style={styles.smallButton}><Plus size={15} color={colors.background} /><Text style={styles.smallButtonText}>{action}</Text></TouchableOpacity>}</View>; }
+function PageTitle({ title, subtitle, action, onAction }: { title: string; subtitle: string; action?: string; onAction?: () => void }) { return <View style={styles.pageTitle}><View><Text style={styles.pageHeading}>{title}</Text><Text style={styles.pageSubtitle}>{subtitle}</Text></View>{action && <TouchableOpacity style={styles.smallButton} onPress={onAction}><Plus size={15} color={colors.background} /><Text style={styles.smallButtonText}>{action}</Text></TouchableOpacity>}</View>; }
 function SectionTitle({ title, action }: { title: string; action?: string }) { return <View style={styles.sectionTitle}><Text style={styles.sectionHeading}>{title}</Text>{action && <Text style={styles.sectionAction}>{action}</Text>}</View>; }
 function AppointmentRow({ item }: { item: typeof appointments[number] }) { return <TouchableOpacity style={styles.appointment}><View style={styles.time}><Text style={styles.timeText}>{item.time}</Text><Clock3 size={14} color={colors.gold} /></View><View style={styles.grow}><Text style={styles.rowTitle}>{item.name}</Text><Text style={styles.rowSub}>{item.service}</Text></View><View><Text style={styles.status}>{item.status}</Text><ChevronRight size={18} color={colors.muted} style={styles.chevron} /></View></TouchableOpacity>; }
 function PackageCard() { return <View style={styles.packageCard}><View style={styles.packageIcon}><PackageCheck color={colors.gold} /></View><View style={styles.grow}><Text style={styles.rowTitle}>Tüm Vücut Lazer</Text><Text style={styles.rowSub}>8 seans paket · 3 seans kullanıldı</Text><View style={styles.progress}><View style={styles.progressFill} /></View></View><Text style={styles.packageCount}>5<Text style={styles.packageSmall}> seans</Text></Text></View>; }
@@ -140,6 +195,7 @@ const styles = StyleSheet.create({
   heroCard: { backgroundColor: colors.surface, borderWidth: 1, borderColor: "#403520", borderRadius: 24, padding: 22, gap: 23 }, heroKicker: { color: colors.gold, fontSize: 10, letterSpacing: 2 }, heroTitle: { color: colors.text, fontSize: 27, lineHeight: 33, fontWeight: "600", marginTop: 9 }, heroText: { color: colors.muted, lineHeight: 21, marginTop: 8 }, heroAction: { alignSelf: "flex-start", backgroundColor: colors.goldSoft, paddingHorizontal: 16, paddingVertical: 12, borderRadius: 12, flexDirection: "row", gap: 8, alignItems: "center" }, heroActionText: { color: colors.background, fontWeight: "800", fontSize: 12 }, metricGrid: { flexDirection: "row", gap: 9, marginTop: 13 }, metric: { flex: 1, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, borderRadius: 17, padding: 14 }, metricValue: { color: colors.text, fontWeight: "700", fontSize: 19 }, metricLabel: { color: colors.muted, fontSize: 10, marginTop: 5 },
   sectionTitle: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginTop: 25, marginBottom: 11 }, sectionHeading: { color: colors.text, fontSize: 19, fontWeight: "600" }, sectionAction: { color: colors.gold, fontSize: 12 }, appointment: { flexDirection: "row", alignItems: "center", gap: 13, backgroundColor: colors.surface, borderBottomWidth: 1, borderBottomColor: colors.line, padding: 14 }, time: { width: 54, alignItems: "center", gap: 4 }, timeText: { color: colors.goldSoft, fontWeight: "700" }, grow: { flex: 1 }, rowTitle: { color: colors.text, fontWeight: "600", fontSize: 14 }, rowSub: { color: colors.muted, fontSize: 12, marginTop: 4 }, status: { color: colors.success, fontSize: 9 }, chevron: { alignSelf: "flex-end", marginTop: 5 }, quickGrid: { flexDirection: "row", gap: 8 }, quick: { flex: 1, backgroundColor: colors.surface, borderRadius: 15, borderWidth: 1, borderColor: colors.line, paddingVertical: 14, alignItems: "center", gap: 8 }, quickIcon: { width: 38, height: 38, borderRadius: 12, backgroundColor: "#221D16", alignItems: "center", justifyContent: "center" }, quickText: { color: colors.text, fontSize: 10 }, packageCard: { flexDirection: "row", alignItems: "center", gap: 12, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, borderRadius: 18, padding: 16 }, packageIcon: { width: 44, height: 44, borderRadius: 14, backgroundColor: "#241E16", alignItems: "center", justifyContent: "center" }, progress: { height: 4, backgroundColor: colors.line, borderRadius: 2, marginTop: 11 }, progressFill: { width: "38%", height: 4, backgroundColor: colors.gold, borderRadius: 2 }, packageCount: { color: colors.goldSoft, fontSize: 22, fontWeight: "700" }, packageSmall: { fontSize: 9, color: colors.muted },
   pageTitle: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 18 }, pageHeading: { color: colors.text, fontSize: 27, fontWeight: "700" }, pageSubtitle: { color: colors.muted, fontSize: 12, marginTop: 4 }, smallButton: { backgroundColor: colors.goldSoft, borderRadius: 11, paddingVertical: 10, paddingHorizontal: 11, flexDirection: "row", gap: 5, alignItems: "center" }, smallButtonText: { color: colors.background, fontWeight: "700", fontSize: 10 }, search: { height: 49, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, borderRadius: 14, flexDirection: "row", alignItems: "center", paddingHorizontal: 14, marginBottom: 12 }, searchInput: { flex: 1, color: colors.text, paddingHorizontal: 10 }, customer: { flexDirection: "row", alignItems: "center", gap: 12, paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: colors.line }, avatar: { width: 43, height: 43, borderRadius: 22, backgroundColor: "#2A2118", alignItems: "center", justifyContent: "center" }, avatarText: { color: colors.goldSoft, fontWeight: "700" },
+  customerForm: { backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, borderRadius: 18, padding: 16, marginBottom: 14 }, formTitle: { color: colors.text, fontSize: 18, fontWeight: "700", marginBottom: 7 }, formField: { minHeight: 49, borderRadius: 13, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.background, color: colors.text, paddingHorizontal: 14, marginTop: 6 }, notesField: { minHeight: 72, paddingTop: 13, textAlignVertical: "top" }, loading: { alignItems: "center", gap: 12, paddingVertical: 40 }, emptyState: { alignItems: "center", gap: 8, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, borderRadius: 18, padding: 28, marginTop: 8 }, emptyTitle: { color: colors.text, fontSize: 17, fontWeight: "700" }, emptyText: { color: colors.muted, fontSize: 12, lineHeight: 18, textAlign: "center" },
   balance: { backgroundColor: colors.goldSoft, borderRadius: 22, padding: 22 }, balanceLabel: { color: "#4B3B26", fontSize: 10, letterSpacing: 2 }, balanceValue: { color: colors.background, fontSize: 35, fontWeight: "800", marginTop: 8 }, balanceHint: { color: "#59482F", marginTop: 5, fontSize: 12 }, transaction: { flexDirection: "row", alignItems: "center", paddingVertical: 13, borderBottomWidth: 1, borderBottomColor: colors.line, gap: 11 }, transactionIcon: { width: 39, height: 39, backgroundColor: colors.surface, borderRadius: 12, alignItems: "center", justifyContent: "center" }, amount: { color: colors.success, fontWeight: "700" }, negative: { color: colors.danger },
   profileCard: { alignItems: "center", backgroundColor: colors.surface, borderRadius: 20, padding: 24, marginBottom: 17 }, profileAvatar: { width: 72, height: 72, borderRadius: 36, backgroundColor: colors.goldSoft, alignItems: "center", justifyContent: "center" }, profileInitial: { color: colors.background, fontSize: 30, fontWeight: "800" }, profileName: { color: colors.text, fontSize: 21, fontWeight: "700", marginTop: 12 }, setting: { flexDirection: "row", gap: 12, alignItems: "center", paddingVertical: 16, borderBottomWidth: 1, borderBottomColor: colors.line }, settingText: { flex: 1, color: colors.text }, logout: { borderWidth: 1, borderColor: "#5A2929", borderRadius: 13, alignItems: "center", padding: 15, marginTop: 25 }, logoutText: { color: colors.danger, fontWeight: "600" },
   tabs: { position: "absolute", left: 10, right: 10, bottom: 10, height: 72, borderRadius: 22, backgroundColor: "#15120F", borderWidth: 1, borderColor: colors.line, flexDirection: "row", alignItems: "center", justifyContent: "space-around", paddingHorizontal: 4 }, tab: { flex: 1, alignItems: "center", gap: 5 }, tabText: { color: colors.muted, fontSize: 9 }, tabActive: { color: colors.goldSoft, fontWeight: "700" },
