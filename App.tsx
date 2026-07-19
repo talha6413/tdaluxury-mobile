@@ -16,6 +16,8 @@ import { isSupabaseReady, supabase } from "./src/lib/supabase";
 type Role = "customer" | "staff" | "admin";
 type Tab = "home" | "appointments" | "customers" | "finance" | "profile";
 type Customer = { id: string; full_name: string; phone: string; email: string; notes: string; active: boolean };
+type AppointmentStatus = "pending" | "confirmed" | "completed" | "cancelled" | "no_show";
+type LiveAppointment = { id: string; starts_at: string; ends_at: string; status: AppointmentStatus; notes: string; customers: { full_name: string } | null };
 
 const appointments = [
   { time: "10:00", name: "Elif Yılmaz", service: "Lazer Epilasyon", status: "Onaylandı" },
@@ -118,7 +120,69 @@ function Dashboard({ role, navigate }: { role: Role; navigate: (t: Tab) => void 
   </>;
 }
 
-function Appointments() { return <><PageTitle title="Randevular" subtitle="19 Temmuz Pazar" action="Yeni randevu" /><View style={styles.search}><Search size={18} color={colors.muted} /><TextInput placeholder="Randevu ara" placeholderTextColor={colors.muted} style={styles.searchInput} /></View>{appointments.map((item) => <AppointmentRow item={item} key={item.time} />)}</>; }
+function Appointments() {
+  const [items, setItems] = useState<LiveAppointment[]>([]);
+  const [customers, setCustomers] = useState<Customer[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [showForm, setShowForm] = useState(false);
+  const [selectedCustomer, setSelectedCustomer] = useState("");
+  const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
+  const [time, setTime] = useState("10:00");
+  const [duration, setDuration] = useState("60");
+  const [service, setService] = useState("");
+  const [formError, setFormError] = useState("");
+
+  async function loadAppointments() {
+    if (!supabase) { setLoading(false); return; }
+    setLoading(true);
+    const from = new Date(); from.setHours(0, 0, 0, 0);
+    const [appointmentResult, customerResult] = await Promise.all([
+      supabase.from("appointments").select("id,starts_at,ends_at,status,notes,customers(full_name)").gte("starts_at", from.toISOString()).order("starts_at").limit(100),
+      supabase.from("customers").select("id,full_name,phone,email,notes,active").eq("active", true).order("full_name"),
+    ]);
+    setLoading(false);
+    if (appointmentResult.error) { Alert.alert("Randevular yüklenemedi", appointmentResult.error.message); return; }
+    setItems((appointmentResult.data ?? []) as unknown as LiveAppointment[]);
+    setCustomers((customerResult.data ?? []) as Customer[]);
+  }
+
+  useEffect(() => { void loadAppointments(); }, []);
+
+  async function saveAppointment() {
+    if (!supabase) { setFormError("Supabase bağlantısı hazır değil."); return; }
+    if (!selectedCustomer || !/^\d{4}-\d{2}-\d{2}$/.test(date) || !/^\d{2}:\d{2}$/.test(time)) { setFormError("Müşteri, tarih ve saati eksiksiz girin."); return; }
+    const minutes = Number(duration);
+    if (!Number.isFinite(minutes) || minutes < 15 || minutes > 480) { setFormError("Süre 15-480 dakika arasında olmalıdır."); return; }
+    const startsAt = new Date(`${date}T${time}:00`);
+    if (Number.isNaN(startsAt.getTime())) { setFormError("Tarih veya saat geçersiz."); return; }
+    const endsAt = new Date(startsAt.getTime() + minutes * 60000);
+    setSaving(true); setFormError("");
+    const { error } = await supabase.from("appointments").insert({ customer_id: selectedCustomer, starts_at: startsAt.toISOString(), ends_at: endsAt.toISOString(), status: "pending", notes: service.trim() });
+    setSaving(false);
+    if (error) { setFormError(error.message); return; }
+    setService(""); setShowForm(false); setSelectedCustomer("");
+    await loadAppointments();
+    Alert.alert("Randevu oluşturuldu", "Randevu takvime başarıyla eklendi.");
+  }
+
+  const statusLabel: Record<AppointmentStatus, string> = { pending: "Bekliyor", confirmed: "Onaylandı", completed: "Tamamlandı", cancelled: "İptal", no_show: "Gelmedi" };
+  return <>
+    <PageTitle title="Randevular" subtitle={`${items.length} yaklaşan randevu`} action={showForm ? "Formu kapat" : "Yeni randevu"} onAction={() => { setFormError(""); setShowForm(value => !value); }} />
+    {showForm && <View style={styles.customerForm}>
+      <Text style={styles.formTitle}>Yeni randevu</Text>
+      <Text style={styles.inputLabel}>Müşteri *</Text>
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.choiceScroll}>{customers.map(customer => <TouchableOpacity key={customer.id} style={[styles.choice, selectedCustomer === customer.id && styles.choiceActive]} onPress={() => setSelectedCustomer(customer.id)}><Text style={[styles.choiceText, selectedCustomer === customer.id && styles.choiceTextActive]}>{customer.full_name}</Text></TouchableOpacity>)}</ScrollView>
+      {customers.length === 0 && <Text style={styles.emptyText}>Önce müşteri kaydı oluşturmalısınız.</Text>}
+      <View style={styles.formRow}><View style={styles.formHalf}><Text style={styles.inputLabel}>Tarih *</Text><TextInput value={date} onChangeText={setDate} placeholder="2026-07-20" placeholderTextColor={colors.muted} style={styles.formField} /></View><View style={styles.formHalf}><Text style={styles.inputLabel}>Saat *</Text><TextInput value={time} onChangeText={setTime} placeholder="10:00" placeholderTextColor={colors.muted} style={styles.formField} /></View></View>
+      <Text style={styles.inputLabel}>Süre (dakika)</Text><TextInput value={duration} onChangeText={setDuration} keyboardType="number-pad" placeholder="60" placeholderTextColor={colors.muted} style={styles.formField} />
+      <Text style={styles.inputLabel}>İşlem / not</Text><TextInput value={service} onChangeText={setService} placeholder="Örn. Lazer epilasyon · Tüm vücut" placeholderTextColor={colors.muted} style={styles.formField} />
+      {!!formError && <Text style={styles.error}>{formError}</Text>}
+      <TouchableOpacity style={styles.primaryButton} onPress={() => void saveAppointment()} disabled={saving}>{saving ? <ActivityIndicator color={colors.background} /> : <Text style={styles.primaryButtonText}>RANDEVUYU KAYDET</Text>}</TouchableOpacity>
+    </View>}
+    {loading ? <View style={styles.loading}><ActivityIndicator color={colors.gold} /><Text style={styles.emptyText}>Randevular yükleniyor…</Text></View> : items.length === 0 ? <View style={styles.emptyState}><CalendarDays color={colors.gold} size={30} /><Text style={styles.emptyTitle}>Yaklaşan randevu yok</Text><Text style={styles.emptyText}>Yeni randevu düğmesiyle takvime kayıt ekleyebilirsiniz.</Text></View> : items.map(item => { const start = new Date(item.starts_at); return <View style={styles.appointment} key={item.id}><View style={styles.time}><Text style={styles.timeText}>{start.toLocaleTimeString("tr-TR", { hour: "2-digit", minute: "2-digit" })}</Text><Text style={styles.dateMini}>{start.toLocaleDateString("tr-TR", { day: "2-digit", month: "2-digit" })}</Text></View><View style={styles.grow}><Text style={styles.rowTitle}>{item.customers?.full_name ?? "Müşteri"}</Text><Text style={styles.rowSub}>{item.notes || "İşlem bilgisi girilmedi"}</Text></View><Text style={[styles.status, (item.status === "cancelled" || item.status === "no_show") && styles.statusDanger]}>{statusLabel[item.status]}</Text></View>; })}
+  </>;
+}
 
 function Customers() {
   const [customers, setCustomers] = useState<Customer[]>([]);
@@ -196,6 +260,7 @@ const styles = StyleSheet.create({
   sectionTitle: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginTop: 25, marginBottom: 11 }, sectionHeading: { color: colors.text, fontSize: 19, fontWeight: "600" }, sectionAction: { color: colors.gold, fontSize: 12 }, appointment: { flexDirection: "row", alignItems: "center", gap: 13, backgroundColor: colors.surface, borderBottomWidth: 1, borderBottomColor: colors.line, padding: 14 }, time: { width: 54, alignItems: "center", gap: 4 }, timeText: { color: colors.goldSoft, fontWeight: "700" }, grow: { flex: 1 }, rowTitle: { color: colors.text, fontWeight: "600", fontSize: 14 }, rowSub: { color: colors.muted, fontSize: 12, marginTop: 4 }, status: { color: colors.success, fontSize: 9 }, chevron: { alignSelf: "flex-end", marginTop: 5 }, quickGrid: { flexDirection: "row", gap: 8 }, quick: { flex: 1, backgroundColor: colors.surface, borderRadius: 15, borderWidth: 1, borderColor: colors.line, paddingVertical: 14, alignItems: "center", gap: 8 }, quickIcon: { width: 38, height: 38, borderRadius: 12, backgroundColor: "#221D16", alignItems: "center", justifyContent: "center" }, quickText: { color: colors.text, fontSize: 10 }, packageCard: { flexDirection: "row", alignItems: "center", gap: 12, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, borderRadius: 18, padding: 16 }, packageIcon: { width: 44, height: 44, borderRadius: 14, backgroundColor: "#241E16", alignItems: "center", justifyContent: "center" }, progress: { height: 4, backgroundColor: colors.line, borderRadius: 2, marginTop: 11 }, progressFill: { width: "38%", height: 4, backgroundColor: colors.gold, borderRadius: 2 }, packageCount: { color: colors.goldSoft, fontSize: 22, fontWeight: "700" }, packageSmall: { fontSize: 9, color: colors.muted },
   pageTitle: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 18 }, pageHeading: { color: colors.text, fontSize: 27, fontWeight: "700" }, pageSubtitle: { color: colors.muted, fontSize: 12, marginTop: 4 }, smallButton: { backgroundColor: colors.goldSoft, borderRadius: 11, paddingVertical: 10, paddingHorizontal: 11, flexDirection: "row", gap: 5, alignItems: "center" }, smallButtonText: { color: colors.background, fontWeight: "700", fontSize: 10 }, search: { height: 49, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, borderRadius: 14, flexDirection: "row", alignItems: "center", paddingHorizontal: 14, marginBottom: 12 }, searchInput: { flex: 1, color: colors.text, paddingHorizontal: 10 }, customer: { flexDirection: "row", alignItems: "center", gap: 12, paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: colors.line }, avatar: { width: 43, height: 43, borderRadius: 22, backgroundColor: "#2A2118", alignItems: "center", justifyContent: "center" }, avatarText: { color: colors.goldSoft, fontWeight: "700" },
   customerForm: { backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, borderRadius: 18, padding: 16, marginBottom: 14 }, formTitle: { color: colors.text, fontSize: 18, fontWeight: "700", marginBottom: 7 }, formField: { minHeight: 49, borderRadius: 13, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.background, color: colors.text, paddingHorizontal: 14, marginTop: 6 }, notesField: { minHeight: 72, paddingTop: 13, textAlignVertical: "top" }, loading: { alignItems: "center", gap: 12, paddingVertical: 40 }, emptyState: { alignItems: "center", gap: 8, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, borderRadius: 18, padding: 28, marginTop: 8 }, emptyTitle: { color: colors.text, fontSize: 17, fontWeight: "700" }, emptyText: { color: colors.muted, fontSize: 12, lineHeight: 18, textAlign: "center" },
+  choiceScroll: { marginTop: 8, marginBottom: 4 }, choice: { borderWidth: 1, borderColor: colors.line, backgroundColor: colors.background, borderRadius: 20, paddingHorizontal: 13, paddingVertical: 9, marginRight: 8 }, choiceActive: { backgroundColor: colors.goldSoft, borderColor: colors.goldSoft }, choiceText: { color: colors.text, fontSize: 12 }, choiceTextActive: { color: colors.background, fontWeight: "700" }, formRow: { flexDirection: "row", gap: 9 }, formHalf: { flex: 1 }, dateMini: { color: colors.muted, fontSize: 9 }, statusDanger: { color: colors.danger },
   balance: { backgroundColor: colors.goldSoft, borderRadius: 22, padding: 22 }, balanceLabel: { color: "#4B3B26", fontSize: 10, letterSpacing: 2 }, balanceValue: { color: colors.background, fontSize: 35, fontWeight: "800", marginTop: 8 }, balanceHint: { color: "#59482F", marginTop: 5, fontSize: 12 }, transaction: { flexDirection: "row", alignItems: "center", paddingVertical: 13, borderBottomWidth: 1, borderBottomColor: colors.line, gap: 11 }, transactionIcon: { width: 39, height: 39, backgroundColor: colors.surface, borderRadius: 12, alignItems: "center", justifyContent: "center" }, amount: { color: colors.success, fontWeight: "700" }, negative: { color: colors.danger },
   profileCard: { alignItems: "center", backgroundColor: colors.surface, borderRadius: 20, padding: 24, marginBottom: 17 }, profileAvatar: { width: 72, height: 72, borderRadius: 36, backgroundColor: colors.goldSoft, alignItems: "center", justifyContent: "center" }, profileInitial: { color: colors.background, fontSize: 30, fontWeight: "800" }, profileName: { color: colors.text, fontSize: 21, fontWeight: "700", marginTop: 12 }, setting: { flexDirection: "row", gap: 12, alignItems: "center", paddingVertical: 16, borderBottomWidth: 1, borderBottomColor: colors.line }, settingText: { flex: 1, color: colors.text }, logout: { borderWidth: 1, borderColor: "#5A2929", borderRadius: 13, alignItems: "center", padding: 15, marginTop: 25 }, logoutText: { color: colors.danger, fontWeight: "600" },
   tabs: { position: "absolute", left: 10, right: 10, bottom: 10, height: 72, borderRadius: 22, backgroundColor: "#15120F", borderWidth: 1, borderColor: colors.line, flexDirection: "row", alignItems: "center", justifyContent: "space-around", paddingHorizontal: 4 }, tab: { flex: 1, alignItems: "center", gap: 5 }, tabText: { color: colors.muted, fontSize: 9 }, tabActive: { color: colors.goldSoft, fontWeight: "700" },
