@@ -1,0 +1,16 @@
+{
+  "expo": {
+    "name": "TDA Luxury",
+    "slug": "tda-luxury",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark",
+    "scheme": "tdaluxury",
+    "splash": { "backgroundColor": "#080706" },
+    "ios": { "supportsTablet": true, "bundleIdentifier": "com.tdaluxury.app" },
+    "android": { "package": "com.tdaluxury.app", "adaptiveIcon": { "backgroundColor": "#080706" } },
+    "extra": {
+      "supabaseUrl": "https://ypgenxagjhccfgsyrgzx.supabase.co"
+    }
+  }
+}

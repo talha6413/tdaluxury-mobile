@@ -1,0 +1,6 @@
+1. ZIP dosyasını açın.
+2. İçindeki .env dosyasını tdaluxury uygulama klasörünün ana dizinine kopyalayın.
+3. .env; App.tsx ve package.json ile aynı klasörde olmalıdır.
+4. Çalışan Expo terminalinde Ctrl+C tuşlarına basın.
+5. npx expo start -c komutunu çalıştırın.
+6. Expo Go ile QR kodunu yeniden okutun.
