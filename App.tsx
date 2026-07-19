@@ -18,6 +18,8 @@ type Tab = "home" | "appointments" | "customers" | "finance" | "profile";
 type Customer = { id: string; full_name: string; phone: string; email: string; notes: string; active: boolean };
 type AppointmentStatus = "pending" | "confirmed" | "completed" | "cancelled" | "no_show";
 type LiveAppointment = { id: string; starts_at: string; ends_at: string; status: AppointmentStatus; notes: string; customers: { full_name: string } | null };
+type PaymentMethod = "cash" | "card" | "transfer" | "other";
+type LivePayment = { id: string; amount: number; method: PaymentMethod; paid_at: string; notes: string; customers: { full_name: string } | null };
 
 const appointments = [
   { time: "10:00", name: "Elif Yılmaz", service: "Lazer Epilasyon", status: "Onaylandı" },
@@ -240,7 +242,72 @@ function Customers() {
   </>;
 }
 
-function Finance() { return <><PageTitle title="Kasa & Finans" subtitle="Günlük işletme özeti" action="Tahsilat ekle" /><View style={styles.balance}><Text style={styles.balanceLabel}>BUGÜNKÜ TAHSİLAT</Text><Text style={styles.balanceValue}>₺18.450</Text><Text style={styles.balanceHint}>Düne göre %12 artış</Text></View><View style={styles.metricGrid}><View style={styles.metric}><Text style={styles.metricValue}>₺12.250</Text><Text style={styles.metricLabel}>Nakit</Text></View><View style={styles.metric}><Text style={styles.metricValue}>₺6.200</Text><Text style={styles.metricLabel}>Kart</Text></View><View style={styles.metric}><Text style={styles.metricValue}>₺3.500</Text><Text style={styles.metricLabel}>Bekleyen</Text></View></View><SectionTitle title="Son hareketler" />{[["Elif Yılmaz", "Lazer paket ödemesi", "+₺5.000"], ["Zeynep Kaya", "Cilt bakımı", "+₺1.750"], ["Salon gideri", "Sarf malzeme", "-₺820"]].map(([name, info, amount]) => <View style={styles.transaction} key={name}><View style={styles.transactionIcon}><CircleDollarSign size={19} color={colors.gold} /></View><View style={styles.grow}><Text style={styles.rowTitle}>{name}</Text><Text style={styles.rowSub}>{info}</Text></View><Text style={[styles.amount, String(amount).startsWith("-") && styles.negative]}>{amount}</Text></View>)}</>; }
+function Finance() {
+  const [payments, setPayments] = useState<LivePayment[]>([]);
+  const [customers, setCustomers] = useState<Customer[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [showForm, setShowForm] = useState(false);
+  const [selectedCustomer, setSelectedCustomer] = useState("");
+  const [amount, setAmount] = useState("");
+  const [method, setMethod] = useState<PaymentMethod>("cash");
+  const [notes, setNotes] = useState("");
+  const [formError, setFormError] = useState("");
+
+  async function loadFinance() {
+    if (!supabase) { setLoading(false); return; }
+    setLoading(true);
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    const [paymentResult, customerResult] = await Promise.all([
+      supabase.from("payments").select("id,amount,method,paid_at,notes,customers(full_name)").gte("paid_at", today.toISOString()).order("paid_at", { ascending: false }).limit(100),
+      supabase.from("customers").select("id,full_name,phone,email,notes,active").eq("active", true).order("full_name"),
+    ]);
+    setLoading(false);
+    if (paymentResult.error) { Alert.alert("Kasa yüklenemedi", paymentResult.error.message); return; }
+    setPayments((paymentResult.data ?? []) as unknown as LivePayment[]);
+    setCustomers((customerResult.data ?? []) as Customer[]);
+  }
+
+  useEffect(() => { void loadFinance(); }, []);
+
+  async function savePayment() {
+    if (!supabase) { setFormError("Supabase bağlantısı hazır değil."); return; }
+    const numericAmount = Number(amount.replace(",", "."));
+    if (!selectedCustomer || !Number.isFinite(numericAmount) || numericAmount <= 0) { setFormError("Müşteri ve geçerli tahsilat tutarı zorunludur."); return; }
+    setSaving(true); setFormError("");
+    const { error } = await supabase.from("payments").insert({ customer_id: selectedCustomer, amount: numericAmount, method, notes: notes.trim() });
+    setSaving(false);
+    if (error) { setFormError(error.message); return; }
+    setAmount(""); setNotes(""); setSelectedCustomer(""); setShowForm(false);
+    await loadFinance();
+    Alert.alert("Tahsilat kaydedildi", `${formatMoney(numericAmount)} kasa hareketlerine eklendi.`);
+  }
+
+  const total = payments.reduce((sum, payment) => sum + Number(payment.amount), 0);
+  const cash = payments.filter(payment => payment.method === "cash").reduce((sum, payment) => sum + Number(payment.amount), 0);
+  const card = payments.filter(payment => payment.method === "card").reduce((sum, payment) => sum + Number(payment.amount), 0);
+  const transfer = payments.filter(payment => payment.method === "transfer").reduce((sum, payment) => sum + Number(payment.amount), 0);
+  const methodLabels: Record<PaymentMethod, string> = { cash: "Nakit", card: "Kart", transfer: "Havale", other: "Diğer" };
+
+  return <>
+    <PageTitle title="Kasa & Finans" subtitle="Bugünkü canlı tahsilatlar" action={showForm ? "Formu kapat" : "Tahsilat ekle"} onAction={() => { setFormError(""); setShowForm(value => !value); }} />
+    {showForm && <View style={styles.customerForm}>
+      <Text style={styles.formTitle}>Yeni tahsilat</Text>
+      <Text style={styles.inputLabel}>Müşteri *</Text><ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.choiceScroll}>{customers.map(customer => <TouchableOpacity key={customer.id} style={[styles.choice, selectedCustomer === customer.id && styles.choiceActive]} onPress={() => setSelectedCustomer(customer.id)}><Text style={[styles.choiceText, selectedCustomer === customer.id && styles.choiceTextActive]}>{customer.full_name}</Text></TouchableOpacity>)}</ScrollView>
+      <Text style={styles.inputLabel}>Tutar (₺) *</Text><TextInput value={amount} onChangeText={setAmount} keyboardType="decimal-pad" placeholder="2500" placeholderTextColor={colors.muted} style={styles.formField} />
+      <Text style={styles.inputLabel}>Ödeme yöntemi</Text><View style={styles.methodGrid}>{(["cash", "card", "transfer", "other"] as PaymentMethod[]).map(value => <TouchableOpacity key={value} style={[styles.methodChoice, method === value && styles.choiceActive]} onPress={() => setMethod(value)}><Text style={[styles.choiceText, method === value && styles.choiceTextActive]}>{methodLabels[value]}</Text></TouchableOpacity>)}</View>
+      <Text style={styles.inputLabel}>Açıklama</Text><TextInput value={notes} onChangeText={setNotes} placeholder="Örn. Lazer paket taksiti" placeholderTextColor={colors.muted} style={styles.formField} />
+      {!!formError && <Text style={styles.error}>{formError}</Text>}
+      <TouchableOpacity style={styles.primaryButton} onPress={() => void savePayment()} disabled={saving}>{saving ? <ActivityIndicator color={colors.background} /> : <Text style={styles.primaryButtonText}>TAHSİLATI KAYDET</Text>}</TouchableOpacity>
+    </View>}
+    <View style={styles.balance}><Text style={styles.balanceLabel}>BUGÜNKÜ TAHSİLAT</Text><Text style={styles.balanceValue}>{formatMoney(total)}</Text><Text style={styles.balanceHint}>{payments.length} ödeme hareketi</Text></View>
+    <View style={styles.metricGrid}><View style={styles.metric}><Text style={styles.metricValue}>{formatMoney(cash)}</Text><Text style={styles.metricLabel}>Nakit</Text></View><View style={styles.metric}><Text style={styles.metricValue}>{formatMoney(card)}</Text><Text style={styles.metricLabel}>Kart</Text></View><View style={styles.metric}><Text style={styles.metricValue}>{formatMoney(transfer)}</Text><Text style={styles.metricLabel}>Havale</Text></View></View>
+    <SectionTitle title="Bugünkü hareketler" />
+    {loading ? <View style={styles.loading}><ActivityIndicator color={colors.gold} /></View> : payments.length === 0 ? <View style={styles.emptyState}><WalletCards color={colors.gold} size={30} /><Text style={styles.emptyTitle}>Bugün tahsilat yok</Text><Text style={styles.emptyText}>İlk ödemeyi tahsilat ekle düğmesiyle kaydedebilirsiniz.</Text></View> : payments.map(payment => <View style={styles.transaction} key={payment.id}><View style={styles.transactionIcon}><CircleDollarSign size={19} color={colors.gold} /></View><View style={styles.grow}><Text style={styles.rowTitle}>{payment.customers?.full_name ?? "Müşteri"}</Text><Text style={styles.rowSub}>{methodLabels[payment.method]} · {payment.notes || new Date(payment.paid_at).toLocaleTimeString("tr-TR", { hour: "2-digit", minute: "2-digit" })}</Text></View><Text style={styles.amount}>+{formatMoney(Number(payment.amount))}</Text></View>)}
+  </>;
+}
+
+function formatMoney(value: number) { return new Intl.NumberFormat("tr-TR", { style: "currency", currency: "TRY", maximumFractionDigits: 0 }).format(value); }
 
 function Profile({ role, signOut }: { role: Role; signOut: () => void }) { return <><PageTitle title="Hesabım" subtitle={`${roleLabels[role]} hesabı`} /><View style={styles.profileCard}><View style={styles.profileAvatar}><Text style={styles.profileInitial}>T</Text></View><Text style={styles.profileName}>Talha</Text><Text style={styles.rowSub}>talha6413@gmail.com</Text></View>{["Bildirim ayarları", "Yetkiler ve personel", "İşletme ayarları", "Güvenlik", "Yardım ve destek"].map(x => <TouchableOpacity style={styles.setting} key={x}><Settings size={18} color={colors.gold} /><Text style={styles.settingText}>{x}</Text><ChevronRight size={18} color={colors.muted} /></TouchableOpacity>)}<TouchableOpacity style={styles.logout} onPress={signOut}><Text style={styles.logoutText}>Güvenli çıkış yap</Text></TouchableOpacity></>; }
 
@@ -261,6 +328,7 @@ const styles = StyleSheet.create({
   pageTitle: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 18 }, pageHeading: { color: colors.text, fontSize: 27, fontWeight: "700" }, pageSubtitle: { color: colors.muted, fontSize: 12, marginTop: 4 }, smallButton: { backgroundColor: colors.goldSoft, borderRadius: 11, paddingVertical: 10, paddingHorizontal: 11, flexDirection: "row", gap: 5, alignItems: "center" }, smallButtonText: { color: colors.background, fontWeight: "700", fontSize: 10 }, search: { height: 49, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, borderRadius: 14, flexDirection: "row", alignItems: "center", paddingHorizontal: 14, marginBottom: 12 }, searchInput: { flex: 1, color: colors.text, paddingHorizontal: 10 }, customer: { flexDirection: "row", alignItems: "center", gap: 12, paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: colors.line }, avatar: { width: 43, height: 43, borderRadius: 22, backgroundColor: "#2A2118", alignItems: "center", justifyContent: "center" }, avatarText: { color: colors.goldSoft, fontWeight: "700" },
   customerForm: { backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, borderRadius: 18, padding: 16, marginBottom: 14 }, formTitle: { color: colors.text, fontSize: 18, fontWeight: "700", marginBottom: 7 }, formField: { minHeight: 49, borderRadius: 13, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.background, color: colors.text, paddingHorizontal: 14, marginTop: 6 }, notesField: { minHeight: 72, paddingTop: 13, textAlignVertical: "top" }, loading: { alignItems: "center", gap: 12, paddingVertical: 40 }, emptyState: { alignItems: "center", gap: 8, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, borderRadius: 18, padding: 28, marginTop: 8 }, emptyTitle: { color: colors.text, fontSize: 17, fontWeight: "700" }, emptyText: { color: colors.muted, fontSize: 12, lineHeight: 18, textAlign: "center" },
   choiceScroll: { marginTop: 8, marginBottom: 4 }, choice: { borderWidth: 1, borderColor: colors.line, backgroundColor: colors.background, borderRadius: 20, paddingHorizontal: 13, paddingVertical: 9, marginRight: 8 }, choiceActive: { backgroundColor: colors.goldSoft, borderColor: colors.goldSoft }, choiceText: { color: colors.text, fontSize: 12 }, choiceTextActive: { color: colors.background, fontWeight: "700" }, formRow: { flexDirection: "row", gap: 9 }, formHalf: { flex: 1 }, dateMini: { color: colors.muted, fontSize: 9 }, statusDanger: { color: colors.danger },
+  methodGrid: { flexDirection: "row", gap: 7, marginTop: 7 }, methodChoice: { flex: 1, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.background, borderRadius: 12, paddingVertical: 10, alignItems: "center" },
   balance: { backgroundColor: colors.goldSoft, borderRadius: 22, padding: 22 }, balanceLabel: { color: "#4B3B26", fontSize: 10, letterSpacing: 2 }, balanceValue: { color: colors.background, fontSize: 35, fontWeight: "800", marginTop: 8 }, balanceHint: { color: "#59482F", marginTop: 5, fontSize: 12 }, transaction: { flexDirection: "row", alignItems: "center", paddingVertical: 13, borderBottomWidth: 1, borderBottomColor: colors.line, gap: 11 }, transactionIcon: { width: 39, height: 39, backgroundColor: colors.surface, borderRadius: 12, alignItems: "center", justifyContent: "center" }, amount: { color: colors.success, fontWeight: "700" }, negative: { color: colors.danger },
   profileCard: { alignItems: "center", backgroundColor: colors.surface, borderRadius: 20, padding: 24, marginBottom: 17 }, profileAvatar: { width: 72, height: 72, borderRadius: 36, backgroundColor: colors.goldSoft, alignItems: "center", justifyContent: "center" }, profileInitial: { color: colors.background, fontSize: 30, fontWeight: "800" }, profileName: { color: colors.text, fontSize: 21, fontWeight: "700", marginTop: 12 }, setting: { flexDirection: "row", gap: 12, alignItems: "center", paddingVertical: 16, borderBottomWidth: 1, borderBottomColor: colors.line }, settingText: { flex: 1, color: colors.text }, logout: { borderWidth: 1, borderColor: "#5A2929", borderRadius: 13, alignItems: "center", padding: 15, marginTop: 25 }, logoutText: { color: colors.danger, fontWeight: "600" },
   tabs: { position: "absolute", left: 10, right: 10, bottom: 10, height: 72, borderRadius: 22, backgroundColor: "#15120F", borderWidth: 1, borderColor: colors.line, flexDirection: "row", alignItems: "center", justifyContent: "space-around", paddingHorizontal: 4 }, tab: { flex: 1, alignItems: "center", gap: 5 }, tabText: { color: colors.muted, fontSize: 9 }, tabActive: { color: colors.goldSoft, fontWeight: "700" },
