@@ -1,0 +1,21 @@
+TDA Luxury Mobil V7 - İşletme Yönetimi
+
+Önceki tüm modülleri içerir.
+
+Kurulum:
+1. App.tsx, package.json ve package-lock.json dosyalarını mobil projeye kopyalayın.
+2. Supabase SQL Editor'de daha önce çalıştırılmadıysa photo-storage.sql dosyasını çalıştırın.
+3. Supabase SQL Editor'de operations-schema.sql dosyasını çalıştırın.
+4. npm install
+5. npm run typecheck
+6. git add App.tsx package.json package-lock.json supabase/photo-storage.sql supabase/operations-schema.sql
+7. git commit -m "Personel cihaz ve stok yönetimini ekle"
+8. git push origin main
+9. npx expo start -c
+
+Yeni özellikler:
+- Personel listesi
+- Cihaz envanteri ve atış takibi
+- Bakım tarihi bilgisi
+- Stok miktarı ve kritik stok uyarıları
+- Yalnızca yöneticinin cihaz/stok ekleyebilmesi

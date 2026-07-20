@@ -1,0 +1,17 @@
+TDA Luxury Mobil V2
+
+Bu paket Expo SDK 54, canlı müşteri ve canlı randevu modüllerini içerir.
+
+Kurulum:
+1. App.tsx, package.json ve package-lock.json dosyalarını "tdaluxury uygulama"
+   klasörüne kopyalayarak mevcut dosyaların üzerine yazın.
+2. .env dosyasını değiştirmeyin.
+3. npm install
+4. npm run typecheck
+5. npx expo start -c
+
+Canlı randevu özellikleri:
+- Supabase'den yaklaşan randevuları yükleme
+- Aktif müşteriler arasından müşteri seçme
+- Tarih, saat, süre ve işlem notuyla randevu oluşturma
+- Randevu durumlarını Türkçe gösterme

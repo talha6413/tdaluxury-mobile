@@ -1,0 +1,18 @@
+TDA Luxury Mobil V4 - Paket, Seans ve Borç
+
+Bu paket önceki canlı müşteri, randevu ve kasa özelliklerinin tamamını içerir.
+
+Kurulum:
+1. App.tsx dosyasını "tdaluxury uygulama" klasörüne kopyalayıp değiştirin.
+2. npm run typecheck
+3. git add App.tsx
+4. git commit -m "Paket seans ve borç modülünü ekle"
+5. git push origin main
+6. npx expo start -c
+
+Yeni özellikler:
+- Müşteri ayrıntı kartı
+- Müşteriye paket tanımlama
+- Toplam, kullanılan ve kalan seans
+- Paket tutarı, ödenen ve kalan borç
+- Seans işlendiğinde Supabase seans geçmişi oluşturma

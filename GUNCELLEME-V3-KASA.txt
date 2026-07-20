@@ -1,0 +1,19 @@
+TDA Luxury Mobil V3 - Canlı Kasa
+
+Bu paket önceki müşteri ve randevu özelliklerine ek olarak canlı tahsilat
+ve günlük kasa modülünü içerir.
+
+Kurulum:
+1. App.tsx dosyasını "tdaluxury uygulama" klasörüne kopyalayıp değiştirin.
+2. npm run typecheck
+3. git add App.tsx
+4. git commit -m "Canlı tahsilat ve kasa modülünü ekle"
+5. git push origin main
+6. npx expo start -c
+
+Yeni özellikler:
+- Günlük toplam tahsilat
+- Nakit, kart ve havale toplamları
+- Müşteri seçerek tahsilat kaydetme
+- Ödeme yöntemi ve açıklama
+- Supabase'den canlı kasa hareketleri

@@ -1,0 +1,15 @@
+TDA Luxury mobil güncellemesi
+
+1. Bu ZIP içindeki App.tsx, package.json ve package-lock.json dosyalarını
+   bilgisayarınızdaki "tdaluxury uygulama" klasörüne kopyalayın.
+2. Mevcut dosyaların değiştirilmesini onaylayın.
+3. .env dosyanızı silmeyin veya değiştirmeyin.
+4. PowerShell'i "tdaluxury uygulama" klasöründe açın ve çalıştırın:
+
+   npm install
+   npx expo start -c
+
+5. Expo Go ile QR kodunu yeniden okutun.
+
+Bu sürüm Expo SDK 54 ile uyumludur. Canlı Supabase müşteri listeleme,
+arama ve yeni müşteri kaydetme özelliklerini içerir.

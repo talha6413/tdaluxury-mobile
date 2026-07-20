@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 import { StatusBar } from "expo-status-bar";
 import {
-  ActivityIndicator, Alert, SafeAreaView, ScrollView, StyleSheet, Text,
+  ActivityIndicator, Alert, Image, SafeAreaView, ScrollView, StyleSheet, Text,
   TextInput, TouchableOpacity, View,
 } from "react-native";
+import * as ImagePicker from "expo-image-picker";
+import { decode } from "base64-arraybuffer";
 import {
   CalendarDays, ChevronRight, CircleDollarSign, Clock3, Home, LogIn,
   PackageCheck, Plus, Search, Settings, Sparkles, UserRound, UsersRound,
@@ -20,6 +22,12 @@ type AppointmentStatus = "pending" | "confirmed" | "completed" | "cancelled" | "
 type LiveAppointment = { id: string; starts_at: string; ends_at: string; status: AppointmentStatus; notes: string; customers: { full_name: string } | null };
 type PaymentMethod = "cash" | "card" | "transfer" | "other";
 type LivePayment = { id: string; amount: number; method: PaymentMethod; paid_at: string; notes: string; customers: { full_name: string } | null };
+type CustomerPackage = { id: string; customer_id: string; title: string; total_sessions: number; used_sessions: number; total_amount: number; paid_amount: number; active: boolean };
+type CustomerHistory = { id: string; kind: "session" | "payment"; title: string; detail: string; occurred_at: string; amount?: number };
+type CustomerPhoto = { id: string; storage_path: string; category: string; taken_at: string; signed_url?: string };
+type StaffMember = { id: string; display_name: string; title: string; phone: string; active: boolean };
+type Device = { id: string; name: string; model: string; room: string; shot_count: number; maintenance_due: string | null; active: boolean };
+type StockItem = { id: string; name: string; unit: string; quantity: number; min_quantity: number; active: boolean };
 
 const appointments = [
   { time: "10:00", name: "Elif Yılmaz", service: "Lazer Epilasyon", status: "Onaylandı" },
@@ -197,6 +205,17 @@ function Customers() {
   const [email, setEmail] = useState("");
   const [notes, setNotes] = useState("");
   const [formError, setFormError] = useState("");
+  const [selected, setSelected] = useState<Customer | null>(null);
+  const [packages, setPackages] = useState<CustomerPackage[]>([]);
+  const [packageLoading, setPackageLoading] = useState(false);
+  const [showPackageForm, setShowPackageForm] = useState(false);
+  const [packageTitle, setPackageTitle] = useState("");
+  const [totalSessions, setTotalSessions] = useState("8");
+  const [packageAmount, setPackageAmount] = useState("");
+  const [paidAmount, setPaidAmount] = useState("0");
+  const [history, setHistory] = useState<CustomerHistory[]>([]);
+  const [photos, setPhotos] = useState<CustomerPhoto[]>([]);
+  const [uploadingPhoto, setUploadingPhoto] = useState(false);
 
   async function loadCustomers() {
     if (!supabase) { setLoading(false); return; }
@@ -223,10 +242,96 @@ function Customers() {
     Alert.alert("Müşteri kaydedildi", `${name} müşteri listenize eklendi.`);
   }
 
+  async function openCustomer(customer: Customer) {
+    setSelected(customer); setShowPackageForm(false); setPackageLoading(true); setFormError("");
+    if (!supabase) { setPackageLoading(false); return; }
+    const [packageResult, sessionResult, paymentResult, photoResult] = await Promise.all([
+      supabase.from("customer_packages").select("id,customer_id,title,total_sessions,used_sessions,total_amount,paid_amount,active").eq("customer_id", customer.id).eq("active", true).order("created_at", { ascending: false }),
+      supabase.from("session_records").select("id,session_number,performed_at,notes,customer_packages!inner(customer_id,title)").eq("customer_packages.customer_id", customer.id).order("performed_at", { ascending: false }).limit(50),
+      supabase.from("payments").select("id,amount,method,paid_at,notes").eq("customer_id", customer.id).order("paid_at", { ascending: false }).limit(50),
+      supabase.from("customer_photos").select("id,storage_path,category,taken_at").eq("customer_id", customer.id).order("taken_at", { ascending: false }).limit(50),
+    ]);
+    setPackageLoading(false);
+    if (packageResult.error) { Alert.alert("Paketler yüklenemedi", packageResult.error.message); return; }
+    setPackages((packageResult.data ?? []) as CustomerPackage[]);
+    const sessions: CustomerHistory[] = (sessionResult.data ?? []).map((row: any) => ({ id: `s-${row.id}`, kind: "session", title: row.customer_packages?.title ?? "Seans", detail: `${row.session_number}. seans · ${row.notes || "İşlem tamamlandı"}`, occurred_at: row.performed_at }));
+    const paymentMethods: Record<PaymentMethod, string> = { cash: "Nakit", card: "Kart", transfer: "Havale", other: "Diğer" };
+    const paymentItems: CustomerHistory[] = (paymentResult.data ?? []).map((row: any) => ({ id: `p-${row.id}`, kind: "payment", title: "Tahsilat", detail: `${paymentMethods[row.method as PaymentMethod] ?? "Ödeme"}${row.notes ? ` · ${row.notes}` : ""}`, occurred_at: row.paid_at, amount: Number(row.amount) }));
+    setHistory([...sessions, ...paymentItems].sort((a, b) => new Date(b.occurred_at).getTime() - new Date(a.occurred_at).getTime()));
+    const photoRows = (photoResult.data ?? []) as CustomerPhoto[];
+    if (photoRows.length) {
+      const { data: signed } = await supabase.storage.from("customer-photos").createSignedUrls(photoRows.map(photo => photo.storage_path), 3600);
+      setPhotos(photoRows.map((photo, index) => ({ ...photo, signed_url: signed?.[index]?.signedUrl ?? undefined })));
+    } else setPhotos([]);
+  }
+
+  async function addPhoto() {
+    if (!supabase || !selected) return;
+    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!permission.granted) { Alert.alert("Fotoğraf izni gerekli", "Müşteri fotoğrafı seçmek için galeri izni vermelisiniz."); return; }
+    const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ["images"], allowsEditing: false, quality: 0.85, base64: true });
+    if (result.canceled || !result.assets[0]?.base64) return;
+    setUploadingPhoto(true);
+    const asset = result.assets[0];
+    const base64 = asset.base64;
+    if (!base64) return;
+    const extension = asset.mimeType?.includes("png") ? "png" : "jpg";
+    const path = `${selected.id}/${Date.now()}.${extension}`;
+    const { error: uploadError } = await supabase.storage.from("customer-photos").upload(path, decode(base64), { contentType: asset.mimeType ?? "image/jpeg", upsert: false });
+    if (uploadError) { setUploadingPhoto(false); Alert.alert("Fotoğraf yüklenemedi", uploadError.message); return; }
+    const { data, error } = await supabase.from("customer_photos").insert({ customer_id: selected.id, storage_path: path, category: "progress", taken_at: new Date().toISOString() }).select("id,storage_path,category,taken_at").single();
+    if (error) { await supabase.storage.from("customer-photos").remove([path]); setUploadingPhoto(false); Alert.alert("Fotoğraf kaydedilemedi", error.message); return; }
+    const { data: signed } = await supabase.storage.from("customer-photos").createSignedUrl(path, 3600);
+    setPhotos(current => [{ ...(data as CustomerPhoto), signed_url: signed?.signedUrl }, ...current]);
+    setUploadingPhoto(false);
+    Alert.alert("Fotoğraf eklendi", "Fotoğraf güvenli müşteri arşivine kaydedildi.");
+  }
+
+  async function savePackage() {
+    if (!supabase || !selected) return;
+    const sessions = Number(totalSessions);
+    const total = Number(packageAmount.replace(",", "."));
+    const paid = Number(paidAmount.replace(",", "."));
+    if (!packageTitle.trim() || !Number.isInteger(sessions) || sessions < 1 || !Number.isFinite(total) || total < 0 || !Number.isFinite(paid) || paid < 0 || paid > total) { setFormError("Paket adı, seans ve ödeme bilgilerini kontrol edin."); return; }
+    setSaving(true); setFormError("");
+    const { data, error } = await supabase.from("customer_packages").insert({ customer_id: selected.id, title: packageTitle.trim(), total_sessions: sessions, total_amount: total, paid_amount: paid }).select("id,customer_id,title,total_sessions,used_sessions,total_amount,paid_amount,active").single();
+    setSaving(false);
+    if (error) { setFormError(error.message); return; }
+    setPackages(current => [data as CustomerPackage, ...current]);
+    setPackageTitle(""); setPackageAmount(""); setPaidAmount("0"); setTotalSessions("8"); setShowPackageForm(false);
+    Alert.alert("Paket oluşturuldu", "Paket müşteri kartına eklendi.");
+  }
+
+  async function useSession(item: CustomerPackage) {
+    if (!supabase || item.used_sessions >= item.total_sessions) return;
+    const next = item.used_sessions + 1;
+    setSaving(true);
+    const { data: session, error: sessionError } = await supabase.from("session_records").insert({ package_id: item.id, session_number: next, notes: `${item.title} seansı` }).select("id").single();
+    if (sessionError) { setSaving(false); Alert.alert("Seans kaydedilemedi", sessionError.message); return; }
+    const { error } = await supabase.from("customer_packages").update({ used_sessions: next }).eq("id", item.id);
+    setSaving(false);
+    if (error) { await supabase.from("session_records").delete().eq("id", session.id); Alert.alert("Seans kaydedilemedi", error.message); return; }
+    setPackages(current => current.map(pkg => pkg.id === item.id ? { ...pkg, used_sessions: next } : pkg));
+    setHistory(current => [{ id: `s-${session.id}`, kind: "session", title: item.title, detail: `${next}. seans · İşlem tamamlandı`, occurred_at: new Date().toISOString() }, ...current]);
+    Alert.alert("Seans işlendi", `${item.title}: ${next}/${item.total_sessions} seans kullanıldı.`);
+  }
+
   const filtered = customers.filter(customer => `${customer.full_name} ${customer.phone}`.toLocaleLowerCase("tr").includes(query.toLocaleLowerCase("tr").trim()));
   const initials = (name: string) => name.split(/\s+/).slice(0, 2).map(part => part[0]).join("").toLocaleUpperCase("tr");
 
   return <>
+    {selected && <View style={styles.detailCard}>
+      <View style={styles.detailHeader}><TouchableOpacity onPress={() => setSelected(null)}><Text style={styles.backText}>‹ Müşteriler</Text></TouchableOpacity><TouchableOpacity style={styles.smallButton} onPress={() => setShowPackageForm(value => !value)}><Plus size={15} color={colors.background} /><Text style={styles.smallButtonText}>Paket ekle</Text></TouchableOpacity></View>
+      <Text style={styles.detailName}>{selected.full_name}</Text><Text style={styles.rowSub}>{selected.phone}{selected.email ? ` · ${selected.email}` : ""}</Text>{!!selected.notes && <Text style={styles.detailNote}>{selected.notes}</Text>}
+      {showPackageForm && <View style={styles.packageForm}><Text style={styles.inputLabel}>Paket adı *</Text><TextInput value={packageTitle} onChangeText={setPackageTitle} placeholder="Örn. Tüm Vücut Lazer" placeholderTextColor={colors.muted} style={styles.formField} /><View style={styles.formRow}><View style={styles.formHalf}><Text style={styles.inputLabel}>Seans</Text><TextInput value={totalSessions} onChangeText={setTotalSessions} keyboardType="number-pad" style={styles.formField} /></View><View style={styles.formHalf}><Text style={styles.inputLabel}>Toplam ₺</Text><TextInput value={packageAmount} onChangeText={setPackageAmount} keyboardType="decimal-pad" style={styles.formField} /></View></View><Text style={styles.inputLabel}>Başlangıçta ödenen ₺</Text><TextInput value={paidAmount} onChangeText={setPaidAmount} keyboardType="decimal-pad" style={styles.formField} />{!!formError && <Text style={styles.error}>{formError}</Text>}<TouchableOpacity style={styles.primaryButton} onPress={() => void savePackage()} disabled={saving}><Text style={styles.primaryButtonText}>PAKETİ KAYDET</Text></TouchableOpacity></View>}
+      <SectionTitle title="Aktif paketler" />
+      {packageLoading ? <ActivityIndicator color={colors.gold} /> : packages.length === 0 ? <Text style={styles.emptyText}>Bu müşteriye ait aktif paket yok.</Text> : packages.map(item => { const remaining = item.total_sessions - item.used_sessions; const debt = Number(item.total_amount) - Number(item.paid_amount); return <View style={styles.livePackage} key={item.id}><View style={styles.grow}><Text style={styles.rowTitle}>{item.title}</Text><Text style={styles.rowSub}>{item.used_sessions}/{item.total_sessions} kullanıldı · {remaining} seans kaldı</Text><Text style={styles.debtText}>{debt > 0 ? `${formatMoney(debt)} borç` : "Ödemesi tamamlandı"}</Text></View><TouchableOpacity style={[styles.sessionButton, remaining === 0 && styles.disabledButton]} disabled={remaining === 0 || saving} onPress={() => void useSession(item)}><Text style={styles.sessionButtonText}>{remaining === 0 ? "Bitti" : "Seans işle"}</Text></TouchableOpacity></View>; })}
+      <SectionTitle title="İşlem geçmişi" />
+      {history.length === 0 ? <Text style={styles.emptyText}>Henüz seans veya tahsilat hareketi yok.</Text> : history.slice(0, 20).map(item => <View style={styles.historyRow} key={item.id}><View style={[styles.historyIcon, item.kind === "payment" && styles.historyPayment]}>{item.kind === "session" ? <Sparkles size={16} color={colors.gold} /> : <WalletCards size={16} color={colors.success} />}</View><View style={styles.grow}><Text style={styles.rowTitle}>{item.title}</Text><Text style={styles.rowSub}>{item.detail}</Text><Text style={styles.historyDate}>{new Date(item.occurred_at).toLocaleString("tr-TR", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" })}</Text></View>{item.amount != null && <Text style={styles.amount}>+{formatMoney(item.amount)}</Text>}</View>)}
+      <View style={styles.photoTitle}><SectionTitle title="Fotoğraf arşivi" /><TouchableOpacity style={styles.photoButton} onPress={() => void addPhoto()} disabled={uploadingPhoto}>{uploadingPhoto ? <ActivityIndicator color={colors.background} size="small" /> : <Text style={styles.photoButtonText}>+ Fotoğraf</Text>}</TouchableOpacity></View>
+      {photos.length === 0 ? <Text style={styles.emptyText}>Bu müşteriye ait fotoğraf bulunmuyor.</Text> : <View style={styles.photoGrid}>{photos.map(photo => photo.signed_url ? <View style={styles.photoItem} key={photo.id}><Image source={{ uri: photo.signed_url }} style={styles.photoImage} /><Text style={styles.photoDate}>{new Date(photo.taken_at).toLocaleDateString("tr-TR")}</Text></View> : null)}</View>}
+    </View>}
+    {!selected && <>
     <PageTitle title="Müşteriler" subtitle={`${customers.length} aktif kayıt`} action={showForm ? "Formu kapat" : "Yeni müşteri"} onAction={() => { setFormError(""); setShowForm(value => !value); }} />
     {showForm && <View style={styles.customerForm}>
       <Text style={styles.formTitle}>Yeni müşteri kartı</Text>
@@ -238,7 +343,8 @@ function Customers() {
       <TouchableOpacity style={styles.primaryButton} onPress={() => void saveCustomer()} disabled={saving}>{saving ? <ActivityIndicator color={colors.background} /> : <Text style={styles.primaryButtonText}>MÜŞTERİYİ KAYDET</Text>}</TouchableOpacity>
     </View>}
     <View style={styles.search}><Search size={18} color={colors.muted} /><TextInput value={query} onChangeText={setQuery} placeholder="İsim veya telefon ara" placeholderTextColor={colors.muted} style={styles.searchInput} /></View>
-    {loading ? <View style={styles.loading}><ActivityIndicator color={colors.gold} /><Text style={styles.emptyText}>Müşteriler yükleniyor…</Text></View> : filtered.length === 0 ? <View style={styles.emptyState}><UsersRound color={colors.gold} size={30} /><Text style={styles.emptyTitle}>{query ? "Eşleşen müşteri yok" : "İlk müşterinizi ekleyin"}</Text><Text style={styles.emptyText}>{query ? "Arama ifadesini değiştirin." : "Yeni müşteri düğmesiyle gerçek müşteri kaydı oluşturabilirsiniz."}</Text></View> : filtered.map(customer => <TouchableOpacity style={styles.customer} key={customer.id}><View style={styles.avatar}><Text style={styles.avatarText}>{initials(customer.full_name)}</Text></View><View style={styles.grow}><Text style={styles.rowTitle}>{customer.full_name}</Text><Text style={styles.rowSub}>{customer.phone}{customer.email ? ` · ${customer.email}` : ""}</Text></View><ChevronRight color={colors.muted} size={19} /></TouchableOpacity>)}
+    {loading ? <View style={styles.loading}><ActivityIndicator color={colors.gold} /><Text style={styles.emptyText}>Müşteriler yükleniyor…</Text></View> : filtered.length === 0 ? <View style={styles.emptyState}><UsersRound color={colors.gold} size={30} /><Text style={styles.emptyTitle}>{query ? "Eşleşen müşteri yok" : "İlk müşterinizi ekleyin"}</Text><Text style={styles.emptyText}>{query ? "Arama ifadesini değiştirin." : "Yeni müşteri düğmesiyle gerçek müşteri kaydı oluşturabilirsiniz."}</Text></View> : filtered.map(customer => <TouchableOpacity style={styles.customer} key={customer.id} onPress={() => void openCustomer(customer)}><View style={styles.avatar}><Text style={styles.avatarText}>{initials(customer.full_name)}</Text></View><View style={styles.grow}><Text style={styles.rowTitle}>{customer.full_name}</Text><Text style={styles.rowSub}>{customer.phone}{customer.email ? ` · ${customer.email}` : ""}</Text></View><ChevronRight color={colors.muted} size={19} /></TouchableOpacity>)}
+    </>}
   </>;
 }
 
@@ -309,7 +415,58 @@ function Finance() {
 
 function formatMoney(value: number) { return new Intl.NumberFormat("tr-TR", { style: "currency", currency: "TRY", maximumFractionDigits: 0 }).format(value); }
 
-function Profile({ role, signOut }: { role: Role; signOut: () => void }) { return <><PageTitle title="Hesabım" subtitle={`${roleLabels[role]} hesabı`} /><View style={styles.profileCard}><View style={styles.profileAvatar}><Text style={styles.profileInitial}>T</Text></View><Text style={styles.profileName}>Talha</Text><Text style={styles.rowSub}>talha6413@gmail.com</Text></View>{["Bildirim ayarları", "Yetkiler ve personel", "İşletme ayarları", "Güvenlik", "Yardım ve destek"].map(x => <TouchableOpacity style={styles.setting} key={x}><Settings size={18} color={colors.gold} /><Text style={styles.settingText}>{x}</Text><ChevronRight size={18} color={colors.muted} /></TouchableOpacity>)}<TouchableOpacity style={styles.logout} onPress={signOut}><Text style={styles.logoutText}>Güvenli çıkış yap</Text></TouchableOpacity></>; }
+function Profile({ role, signOut }: { role: Role; signOut: () => void }) {
+  const [section, setSection] = useState<"account" | "staff" | "devices" | "stock">("account");
+  const [staff, setStaff] = useState<StaffMember[]>([]);
+  const [devices, setDevices] = useState<Device[]>([]);
+  const [stock, setStock] = useState<StockItem[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [showForm, setShowForm] = useState(false);
+  const [name, setName] = useState("");
+  const [secondary, setSecondary] = useState("");
+  const [quantity, setQuantity] = useState("0");
+  const [minimum, setMinimum] = useState("0");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  async function loadOperations(next: typeof section) {
+    setSection(next); setShowForm(false); setError("");
+    if (!supabase || next === "account") return;
+    setLoading(true);
+    if (next === "staff") { const { data, error: loadError } = await supabase.from("staff_members").select("id,display_name,title,phone,active").eq("active", true).order("display_name"); if (loadError) setError(loadError.message); else setStaff((data ?? []) as StaffMember[]); }
+    if (next === "devices") { const { data, error: loadError } = await supabase.from("devices").select("id,name,model,room,shot_count,maintenance_due,active").eq("active", true).order("name"); if (loadError) setError(loadError.message); else setDevices((data ?? []) as Device[]); }
+    if (next === "stock") { const { data, error: loadError } = await supabase.from("stock_items").select("id,name,unit,quantity,min_quantity,active").eq("active", true).order("name"); if (loadError) setError(loadError.message); else setStock((data ?? []) as StockItem[]); }
+    setLoading(false);
+  }
+
+  async function saveOperation() {
+    if (!supabase || !name.trim() || role !== "admin") { setError("Bu işlem için yönetici yetkisi ve ad alanı zorunludur."); return; }
+    setSaving(true); setError("");
+    if (section === "devices") {
+      const { data, error: saveError } = await supabase.from("devices").insert({ name: name.trim(), model: secondary.trim(), shot_count: Number(quantity) || 0 }).select("id,name,model,room,shot_count,maintenance_due,active").single();
+      if (saveError) setError(saveError.message); else setDevices(current => [data as Device, ...current]);
+    }
+    if (section === "stock") {
+      const amount = Number(quantity.replace(",", ".")); const min = Number(minimum.replace(",", "."));
+      const { data, error: saveError } = await supabase.from("stock_items").insert({ name: name.trim(), unit: secondary.trim() || "adet", quantity: Math.max(0, amount || 0), min_quantity: Math.max(0, min || 0) }).select("id,name,unit,quantity,min_quantity,active").single();
+      if (saveError) setError(saveError.message); else setStock(current => [data as StockItem, ...current]);
+    }
+    setSaving(false); setName(""); setSecondary(""); setQuantity("0"); setMinimum("0"); setShowForm(false);
+  }
+
+  const tabs = [["account", "Hesap"], ["staff", "Personel"], ["devices", "Cihazlar"], ["stock", "Stok"]] as const;
+  return <>
+    <PageTitle title="Yönetim" subtitle={`${roleLabels[role]} hesabı`} action={role === "admin" && (section === "devices" || section === "stock") ? (showForm ? "Formu kapat" : "Yeni ekle") : undefined} onAction={() => setShowForm(value => !value)} />
+    <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.manageTabs}>{tabs.map(([id, label]) => <TouchableOpacity key={id} style={[styles.manageTab, section === id && styles.choiceActive]} onPress={() => void loadOperations(id)}><Text style={[styles.choiceText, section === id && styles.choiceTextActive]}>{label}</Text></TouchableOpacity>)}</ScrollView>
+    {showForm && <View style={styles.customerForm}><Text style={styles.formTitle}>{section === "devices" ? "Yeni cihaz" : "Yeni stok kalemi"}</Text><Text style={styles.inputLabel}>Ad *</Text><TextInput value={name} onChangeText={setName} style={styles.formField} placeholder={section === "devices" ? "Aphro Prime" : "Lazer jeli"} placeholderTextColor={colors.muted} /><Text style={styles.inputLabel}>{section === "devices" ? "Model" : "Birim"}</Text><TextInput value={secondary} onChangeText={setSecondary} style={styles.formField} placeholder={section === "devices" ? "Diode" : "adet / litre"} placeholderTextColor={colors.muted} /><Text style={styles.inputLabel}>{section === "devices" ? "Atış sayısı" : "Miktar"}</Text><TextInput value={quantity} onChangeText={setQuantity} keyboardType="decimal-pad" style={styles.formField} />{section === "stock" && <><Text style={styles.inputLabel}>Kritik stok sınırı</Text><TextInput value={minimum} onChangeText={setMinimum} keyboardType="decimal-pad" style={styles.formField} /></>}{!!error && <Text style={styles.error}>{error}</Text>}<TouchableOpacity style={styles.primaryButton} onPress={() => void saveOperation()} disabled={saving}>{saving ? <ActivityIndicator color={colors.background} /> : <Text style={styles.primaryButtonText}>KAYDET</Text>}</TouchableOpacity></View>}
+    {section === "account" && <><View style={styles.profileCard}><View style={styles.profileAvatar}><Text style={styles.profileInitial}>T</Text></View><Text style={styles.profileName}>Talha</Text><Text style={styles.rowSub}>talha6413@gmail.com</Text></View><TouchableOpacity style={styles.setting}><Settings size={18} color={colors.gold} /><Text style={styles.settingText}>Bildirim ve güvenlik ayarları</Text><ChevronRight size={18} color={colors.muted} /></TouchableOpacity><TouchableOpacity style={styles.logout} onPress={signOut}><Text style={styles.logoutText}>Güvenli çıkış yap</Text></TouchableOpacity></>}
+    {loading && <View style={styles.loading}><ActivityIndicator color={colors.gold} /></View>}
+    {!!error && !showForm && <Text style={styles.error}>{error}</Text>}
+    {section === "staff" && staff.map(item => <View style={styles.manageRow} key={item.id}><View style={styles.avatar}><Text style={styles.avatarText}>{item.display_name.slice(0, 2).toLocaleUpperCase("tr")}</Text></View><View style={styles.grow}><Text style={styles.rowTitle}>{item.display_name}</Text><Text style={styles.rowSub}>{item.title}{item.phone ? ` · ${item.phone}` : ""}</Text></View><Text style={styles.status}>Aktif</Text></View>)}
+    {section === "devices" && devices.map(item => <View style={styles.manageRow} key={item.id}><View style={styles.transactionIcon}><Settings size={18} color={colors.gold} /></View><View style={styles.grow}><Text style={styles.rowTitle}>{item.name}</Text><Text style={styles.rowSub}>{item.model || "Model yok"}{item.room ? ` · ${item.room}` : ""}</Text><Text style={styles.historyDate}>{Number(item.shot_count).toLocaleString("tr-TR")} atış{item.maintenance_due ? ` · Bakım ${new Date(item.maintenance_due).toLocaleDateString("tr-TR")}` : ""}</Text></View></View>)}
+    {section === "stock" && stock.map(item => { const critical = Number(item.quantity) <= Number(item.min_quantity); return <View style={styles.manageRow} key={item.id}><View style={[styles.transactionIcon, critical && styles.criticalIcon]}><PackageCheck size={18} color={critical ? colors.danger : colors.gold} /></View><View style={styles.grow}><Text style={styles.rowTitle}>{item.name}</Text><Text style={styles.rowSub}>{item.quantity} {item.unit} · Alt sınır {item.min_quantity}</Text></View><Text style={[styles.status, critical && styles.statusDanger]}>{critical ? "Kritik" : "Yeterli"}</Text></View>; })}
+  </>;
+}
 
 function PageTitle({ title, subtitle, action, onAction }: { title: string; subtitle: string; action?: string; onAction?: () => void }) { return <View style={styles.pageTitle}><View><Text style={styles.pageHeading}>{title}</Text><Text style={styles.pageSubtitle}>{subtitle}</Text></View>{action && <TouchableOpacity style={styles.smallButton} onPress={onAction}><Plus size={15} color={colors.background} /><Text style={styles.smallButtonText}>{action}</Text></TouchableOpacity>}</View>; }
 function SectionTitle({ title, action }: { title: string; action?: string }) { return <View style={styles.sectionTitle}><Text style={styles.sectionHeading}>{title}</Text>{action && <Text style={styles.sectionAction}>{action}</Text>}</View>; }
@@ -329,6 +486,10 @@ const styles = StyleSheet.create({
   customerForm: { backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, borderRadius: 18, padding: 16, marginBottom: 14 }, formTitle: { color: colors.text, fontSize: 18, fontWeight: "700", marginBottom: 7 }, formField: { minHeight: 49, borderRadius: 13, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.background, color: colors.text, paddingHorizontal: 14, marginTop: 6 }, notesField: { minHeight: 72, paddingTop: 13, textAlignVertical: "top" }, loading: { alignItems: "center", gap: 12, paddingVertical: 40 }, emptyState: { alignItems: "center", gap: 8, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, borderRadius: 18, padding: 28, marginTop: 8 }, emptyTitle: { color: colors.text, fontSize: 17, fontWeight: "700" }, emptyText: { color: colors.muted, fontSize: 12, lineHeight: 18, textAlign: "center" },
   choiceScroll: { marginTop: 8, marginBottom: 4 }, choice: { borderWidth: 1, borderColor: colors.line, backgroundColor: colors.background, borderRadius: 20, paddingHorizontal: 13, paddingVertical: 9, marginRight: 8 }, choiceActive: { backgroundColor: colors.goldSoft, borderColor: colors.goldSoft }, choiceText: { color: colors.text, fontSize: 12 }, choiceTextActive: { color: colors.background, fontWeight: "700" }, formRow: { flexDirection: "row", gap: 9 }, formHalf: { flex: 1 }, dateMini: { color: colors.muted, fontSize: 9 }, statusDanger: { color: colors.danger },
   methodGrid: { flexDirection: "row", gap: 7, marginTop: 7 }, methodChoice: { flex: 1, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.background, borderRadius: 12, paddingVertical: 10, alignItems: "center" },
+  detailCard: { backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, borderRadius: 20, padding: 18 }, detailHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" }, backText: { color: colors.gold, fontWeight: "700" }, detailName: { color: colors.text, fontSize: 25, fontWeight: "700", marginTop: 18 }, detailNote: { color: colors.muted, backgroundColor: colors.background, borderRadius: 12, padding: 12, marginTop: 12, lineHeight: 18 }, packageForm: { borderTopWidth: 1, borderTopColor: colors.line, marginTop: 16, paddingTop: 10 }, livePackage: { flexDirection: "row", alignItems: "center", gap: 10, backgroundColor: colors.background, borderRadius: 15, padding: 14, marginBottom: 9 }, debtText: { color: colors.goldSoft, fontSize: 11, marginTop: 7 }, sessionButton: { backgroundColor: colors.goldSoft, borderRadius: 10, paddingHorizontal: 11, paddingVertical: 10 }, sessionButtonText: { color: colors.background, fontSize: 10, fontWeight: "800" }, disabledButton: { opacity: 0.45 },
+  historyRow: { flexDirection: "row", alignItems: "center", gap: 11, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: colors.line }, historyIcon: { width: 36, height: 36, borderRadius: 11, backgroundColor: "#2A2118", alignItems: "center", justifyContent: "center" }, historyPayment: { backgroundColor: "#13271F" }, historyDate: { color: colors.muted, fontSize: 9, marginTop: 5 },
+  photoTitle: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" }, photoButton: { backgroundColor: colors.goldSoft, borderRadius: 10, paddingHorizontal: 12, paddingVertical: 9, minWidth: 76, alignItems: "center" }, photoButtonText: { color: colors.background, fontSize: 10, fontWeight: "800" }, photoGrid: { flexDirection: "row", flexWrap: "wrap", gap: 8 }, photoItem: { width: "31%", backgroundColor: colors.background, borderRadius: 12, overflow: "hidden" }, photoImage: { width: "100%", aspectRatio: 0.8, backgroundColor: colors.line }, photoDate: { color: colors.muted, fontSize: 8, padding: 6, textAlign: "center" },
+  manageTabs: { marginBottom: 16 }, manageTab: { borderWidth: 1, borderColor: colors.line, borderRadius: 18, paddingHorizontal: 14, paddingVertical: 9, marginRight: 7 }, manageRow: { flexDirection: "row", alignItems: "center", gap: 11, paddingVertical: 13, borderBottomWidth: 1, borderBottomColor: colors.line }, criticalIcon: { backgroundColor: "#301A1A" },
   balance: { backgroundColor: colors.goldSoft, borderRadius: 22, padding: 22 }, balanceLabel: { color: "#4B3B26", fontSize: 10, letterSpacing: 2 }, balanceValue: { color: colors.background, fontSize: 35, fontWeight: "800", marginTop: 8 }, balanceHint: { color: "#59482F", marginTop: 5, fontSize: 12 }, transaction: { flexDirection: "row", alignItems: "center", paddingVertical: 13, borderBottomWidth: 1, borderBottomColor: colors.line, gap: 11 }, transactionIcon: { width: 39, height: 39, backgroundColor: colors.surface, borderRadius: 12, alignItems: "center", justifyContent: "center" }, amount: { color: colors.success, fontWeight: "700" }, negative: { color: colors.danger },
   profileCard: { alignItems: "center", backgroundColor: colors.surface, borderRadius: 20, padding: 24, marginBottom: 17 }, profileAvatar: { width: 72, height: 72, borderRadius: 36, backgroundColor: colors.goldSoft, alignItems: "center", justifyContent: "center" }, profileInitial: { color: colors.background, fontSize: 30, fontWeight: "800" }, profileName: { color: colors.text, fontSize: 21, fontWeight: "700", marginTop: 12 }, setting: { flexDirection: "row", gap: 12, alignItems: "center", paddingVertical: 16, borderBottomWidth: 1, borderBottomColor: colors.line }, settingText: { flex: 1, color: colors.text }, logout: { borderWidth: 1, borderColor: "#5A2929", borderRadius: 13, alignItems: "center", padding: 15, marginTop: 25 }, logoutText: { color: colors.danger, fontWeight: "600" },
   tabs: { position: "absolute", left: 10, right: 10, bottom: 10, height: 72, borderRadius: 22, backgroundColor: "#15120F", borderWidth: 1, borderColor: colors.line, flexDirection: "row", alignItems: "center", justifyContent: "space-around", paddingHorizontal: 4 }, tab: { flex: 1, alignItems: "center", gap: 5 }, tabText: { color: colors.muted, fontSize: 9 }, tabActive: { color: colors.goldSoft, fontWeight: "700" },

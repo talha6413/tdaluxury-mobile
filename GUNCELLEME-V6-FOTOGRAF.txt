@@ -1,0 +1,21 @@
+TDA Luxury Mobil V6 - Güvenli Fotoğraf Arşivi
+
+Önceki tüm modülleri içerir.
+
+Dosyalar:
+- App.tsx
+- package.json
+- package-lock.json
+- photo-storage.sql
+
+Kurulum:
+1. İlk üç dosyayı mobil proje klasöründeki dosyaların üzerine yazın.
+2. npm install
+3. Supabase SQL Editor'de photo-storage.sql içeriğini bir kez çalıştırın.
+4. npm run typecheck
+5. git add App.tsx package.json package-lock.json supabase/photo-storage.sql
+6. git commit -m "Güvenli müşteri fotoğraf arşivini ekle"
+7. git push origin main
+8. npx expo start -c
+
+Fotoğraf alanı private'dır. Yalnızca yetkili yönetici ve personel erişebilir.
