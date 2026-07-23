@@ -7,7 +7,7 @@ import {
 import * as ImagePicker from "expo-image-picker";
 import { decode } from "base64-arraybuffer";
 import {
-  CalendarDays, ChevronRight, CircleDollarSign, Clock3, Home, LogIn,
+  AlertTriangle, CalendarDays, ChevronRight, CircleDollarSign, Clock3, Home, LogIn,
   PackageCheck, Plus, Search, Settings, Sparkles, UserRound, UsersRound,
   WalletCards,
 } from "lucide-react-native";
@@ -119,12 +119,54 @@ function Header({ role, displayName }: { role: Role; displayName: string }) {
 }
 
 function Dashboard({ role, navigate }: { role: Role; navigate: (t: Tab) => void }) {
-  const metrics = role === "customer" ? [["2", "Aktif Paket"], ["7", "Kalan Seans"], ["24 Tem", "Sıradaki Randevu"]] : [["12", "Bugünkü Randevu"], ["₺18.450", "Günlük Tahsilat"], ["4", "Bekleyen İşlem"]];
+  const [loading, setLoading] = useState(role !== "customer");
+  const [todayAppointments, setTodayAppointments] = useState(0);
+  const [todayRevenue, setTodayRevenue] = useState(0);
+  const [pendingAppointments, setPendingAppointments] = useState(0);
+  const [criticalStock, setCriticalStock] = useState(0);
+  const [maintenanceDue, setMaintenanceDue] = useState(0);
+  const [nextAppointments, setNextAppointments] = useState<LiveAppointment[]>([]);
+
+  useEffect(() => {
+    if (role === "customer" || !supabase) { setLoading(false); return; }
+    async function loadDashboard() {
+      if (!supabase) return;
+      setLoading(true);
+      const now = new Date();
+      const dayStart = new Date(now); dayStart.setHours(0, 0, 0, 0);
+      const dayEnd = new Date(now); dayEnd.setHours(23, 59, 59, 999);
+      const [appointmentResult, paymentResult, pendingResult, stockResult, deviceResult, nextResult] = await Promise.all([
+        supabase.from("appointments").select("id", { count: "exact", head: true }).gte("starts_at", dayStart.toISOString()).lte("starts_at", dayEnd.toISOString()).neq("status", "cancelled"),
+        supabase.from("payments").select("amount").gte("paid_at", dayStart.toISOString()).lte("paid_at", dayEnd.toISOString()),
+        supabase.from("appointments").select("id", { count: "exact", head: true }).eq("status", "pending").gte("starts_at", now.toISOString()),
+        supabase.from("stock_items").select("quantity,min_quantity").eq("active", true),
+        supabase.from("devices").select("maintenance_due").eq("active", true).not("maintenance_due", "is", null),
+        supabase.from("appointments").select("id,starts_at,ends_at,status,notes,customers(full_name)").gte("starts_at", now.toISOString()).in("status", ["pending", "confirmed"]).order("starts_at").limit(3),
+      ]);
+      setTodayAppointments(appointmentResult.count ?? 0);
+      setTodayRevenue((paymentResult.data ?? []).reduce((sum, item) => sum + Number(item.amount || 0), 0));
+      setPendingAppointments(pendingResult.count ?? 0);
+      setCriticalStock((stockResult.data ?? []).filter(item => Number(item.quantity) <= Number(item.min_quantity)).length);
+      setMaintenanceDue((deviceResult.data ?? []).filter(item => item.maintenance_due && new Date(item.maintenance_due) <= dayEnd).length);
+      setNextAppointments((nextResult.data ?? []) as unknown as LiveAppointment[]);
+      setLoading(false);
+    }
+    void loadDashboard();
+  }, [role]);
+
+  const metrics = role === "customer"
+    ? [["2", "Aktif Paket"], ["7", "Kalan Seans"], ["24 Tem", "Sıradaki Randevu"]]
+    : [[String(todayAppointments), "Bugünkü Randevu"], [formatMoney(todayRevenue), "Günlük Tahsilat"], [String(pendingAppointments), "Bekleyen İşlem"]];
+  const alerts = [
+    criticalStock > 0 ? `${criticalStock} stok kalemi kritik seviyede` : "",
+    maintenanceDue > 0 ? `${maintenanceDue} cihazın bakım tarihi geldi` : "",
+  ].filter(Boolean);
   return <>
     <View style={styles.heroCard}><View><Text style={styles.heroKicker}>{role === "customer" ? "BAKIM YOLCULUĞUNUZ" : "BUGÜNÜN ÖZETİ"}</Text><Text style={styles.heroTitle}>{role === "customer" ? "Kendinize ayırdığınız zamanı yönetin." : "Salonunuz kontrol altında."}</Text><Text style={styles.heroText}>{role === "customer" ? "Paketlerinizi, seanslarınızı ve randevularınızı tek ekrandan takip edin." : "Günün akışını, tahsilatları ve müşteri hareketlerini izleyin."}</Text></View><TouchableOpacity style={styles.heroAction} onPress={() => navigate("appointments")}><CalendarDays size={18} color={colors.background} /><Text style={styles.heroActionText}>{role === "customer" ? "RANDEVU AL" : "TAKVİMİ AÇ"}</Text></TouchableOpacity></View>
-    <View style={styles.metricGrid}>{metrics.map(([value, label]) => <View style={styles.metric} key={label}><Text style={styles.metricValue}>{value}</Text><Text style={styles.metricLabel}>{label}</Text></View>)}</View>
+    {loading ? <View style={styles.dashboardLoading}><ActivityIndicator color={colors.gold} /><Text style={styles.emptyText}>Canlı özet hazırlanıyor…</Text></View> : <View style={styles.metricGrid}>{metrics.map(([value, label]) => <View style={styles.metric} key={label}><Text style={styles.metricValue}>{value}</Text><Text style={styles.metricLabel}>{label}</Text></View>)}</View>}
+    {role !== "customer" && alerts.length > 0 && <View style={styles.alertCard}><AlertTriangle size={20} color={colors.danger} /><View style={styles.grow}><Text style={styles.alertTitle}>İşletme uyarıları</Text>{alerts.map(alert => <Text key={alert} style={styles.alertText}>• {alert}</Text>)}</View></View>}
     <SectionTitle title={role === "customer" ? "Paketlerim" : "Sıradaki randevular"} action="Tümünü gör" />
-    {role === "customer" ? <PackageCard /> : appointments.slice(0, 3).map((item) => <AppointmentRow key={item.time} item={item} />)}
+    {role === "customer" ? <PackageCard /> : nextAppointments.length === 0 ? <View style={styles.emptyState}><CalendarDays color={colors.gold} size={26} /><Text style={styles.emptyTitle}>Yaklaşan randevu yok</Text></View> : nextAppointments.map(item => { const start = new Date(item.starts_at); return <TouchableOpacity style={styles.appointment} key={item.id} onPress={() => navigate("appointments")}><View style={styles.time}><Text style={styles.timeText}>{start.toLocaleTimeString("tr-TR", { hour: "2-digit", minute: "2-digit" })}</Text><Text style={styles.dateMini}>{start.toLocaleDateString("tr-TR", { day: "2-digit", month: "2-digit" })}</Text></View><View style={styles.grow}><Text style={styles.rowTitle}>{item.customers?.full_name ?? "Müşteri"}</Text><Text style={styles.rowSub}>{item.notes || "İşlem bilgisi girilmedi"}</Text></View><ChevronRight size={18} color={colors.muted} /></TouchableOpacity>; })}
     <SectionTitle title="Hızlı işlemler" />
     <View style={styles.quickGrid}><Quick icon={CalendarDays} label="Randevu" onPress={() => navigate("appointments")} /><Quick icon={UsersRound} label="Müşteriler" onPress={() => navigate("customers")} /><Quick icon={WalletCards} label="Tahsilat" onPress={() => navigate("finance")} /><Quick icon={Plus} label="Yeni işlem" /></View>
   </>;
@@ -481,6 +523,7 @@ const styles = StyleSheet.create({
   login: { flex: 1, padding: 26, justifyContent: "space-between" }, logo: { alignItems: "center", marginTop: 20 }, logoMain: { color: colors.goldSoft, fontSize: 42, fontWeight: "300", letterSpacing: 13 }, logoSub: { color: colors.text, fontSize: 11, letterSpacing: 8, marginLeft: 5 }, kicker: { color: colors.gold, fontSize: 11, letterSpacing: 2, marginBottom: 14 }, loginTitle: { color: colors.text, fontSize: 34, fontWeight: "600" }, loginText: { color: colors.muted, lineHeight: 22, marginTop: 10, maxWidth: 340 }, form: { gap: 9 }, inputLabel: { color: colors.text, fontSize: 13, marginTop: 8 }, input: { height: 55, borderRadius: 14, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface, paddingHorizontal: 17, color: colors.text }, primaryButton: { height: 56, backgroundColor: colors.goldSoft, borderRadius: 14, alignItems: "center", justifyContent: "center", flexDirection: "row", gap: 9, marginTop: 13 }, primaryButtonText: { color: colors.background, fontWeight: "800", letterSpacing: 1 }, error: { color: colors.danger, fontSize: 13 }, demo: { color: colors.muted, textAlign: "center", fontSize: 11 }, secure: { color: colors.muted, textAlign: "center", fontSize: 12 },
   header: { paddingHorizontal: 18, paddingTop: 16, paddingBottom: 14, borderBottomWidth: 1, borderBottomColor: colors.line, flexDirection: "row", alignItems: "center", justifyContent: "space-between" }, headerEyebrow: { color: colors.gold, fontSize: 10, letterSpacing: 2 }, headerTitle: { color: colors.text, fontSize: 21, fontWeight: "600", marginTop: 3 }, roleChip: { flexDirection: "row", alignItems: "center", gap: 6, borderWidth: 1, borderColor: "#4A3D2B", borderRadius: 20, paddingVertical: 8, paddingHorizontal: 12 }, roleText: { color: colors.goldSoft, fontSize: 12, fontWeight: "600" },
   heroCard: { backgroundColor: colors.surface, borderWidth: 1, borderColor: "#403520", borderRadius: 24, padding: 22, gap: 23 }, heroKicker: { color: colors.gold, fontSize: 10, letterSpacing: 2 }, heroTitle: { color: colors.text, fontSize: 27, lineHeight: 33, fontWeight: "600", marginTop: 9 }, heroText: { color: colors.muted, lineHeight: 21, marginTop: 8 }, heroAction: { alignSelf: "flex-start", backgroundColor: colors.goldSoft, paddingHorizontal: 16, paddingVertical: 12, borderRadius: 12, flexDirection: "row", gap: 8, alignItems: "center" }, heroActionText: { color: colors.background, fontWeight: "800", fontSize: 12 }, metricGrid: { flexDirection: "row", gap: 9, marginTop: 13 }, metric: { flex: 1, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, borderRadius: 17, padding: 14 }, metricValue: { color: colors.text, fontWeight: "700", fontSize: 19 }, metricLabel: { color: colors.muted, fontSize: 10, marginTop: 5 },
+  dashboardLoading: { minHeight: 82, marginTop: 13, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, borderRadius: 17, alignItems: "center", justifyContent: "center", gap: 8 }, alertCard: { flexDirection: "row", gap: 12, backgroundColor: "#201515", borderWidth: 1, borderColor: "#512A2A", borderRadius: 17, padding: 15, marginTop: 12 }, alertTitle: { color: colors.text, fontSize: 13, fontWeight: "700", marginBottom: 4 }, alertText: { color: colors.muted, fontSize: 11, lineHeight: 17 },
   sectionTitle: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginTop: 25, marginBottom: 11 }, sectionHeading: { color: colors.text, fontSize: 19, fontWeight: "600" }, sectionAction: { color: colors.gold, fontSize: 12 }, appointment: { flexDirection: "row", alignItems: "center", gap: 13, backgroundColor: colors.surface, borderBottomWidth: 1, borderBottomColor: colors.line, padding: 14 }, time: { width: 54, alignItems: "center", gap: 4 }, timeText: { color: colors.goldSoft, fontWeight: "700" }, grow: { flex: 1 }, rowTitle: { color: colors.text, fontWeight: "600", fontSize: 14 }, rowSub: { color: colors.muted, fontSize: 12, marginTop: 4 }, status: { color: colors.success, fontSize: 9 }, chevron: { alignSelf: "flex-end", marginTop: 5 }, quickGrid: { flexDirection: "row", gap: 8 }, quick: { flex: 1, backgroundColor: colors.surface, borderRadius: 15, borderWidth: 1, borderColor: colors.line, paddingVertical: 14, alignItems: "center", gap: 8 }, quickIcon: { width: 38, height: 38, borderRadius: 12, backgroundColor: "#221D16", alignItems: "center", justifyContent: "center" }, quickText: { color: colors.text, fontSize: 10 }, packageCard: { flexDirection: "row", alignItems: "center", gap: 12, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, borderRadius: 18, padding: 16 }, packageIcon: { width: 44, height: 44, borderRadius: 14, backgroundColor: "#241E16", alignItems: "center", justifyContent: "center" }, progress: { height: 4, backgroundColor: colors.line, borderRadius: 2, marginTop: 11 }, progressFill: { width: "38%", height: 4, backgroundColor: colors.gold, borderRadius: 2 }, packageCount: { color: colors.goldSoft, fontSize: 22, fontWeight: "700" }, packageSmall: { fontSize: 9, color: colors.muted },
   pageTitle: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 18 }, pageHeading: { color: colors.text, fontSize: 27, fontWeight: "700" }, pageSubtitle: { color: colors.muted, fontSize: 12, marginTop: 4 }, smallButton: { backgroundColor: colors.goldSoft, borderRadius: 11, paddingVertical: 10, paddingHorizontal: 11, flexDirection: "row", gap: 5, alignItems: "center" }, smallButtonText: { color: colors.background, fontWeight: "700", fontSize: 10 }, search: { height: 49, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, borderRadius: 14, flexDirection: "row", alignItems: "center", paddingHorizontal: 14, marginBottom: 12 }, searchInput: { flex: 1, color: colors.text, paddingHorizontal: 10 }, customer: { flexDirection: "row", alignItems: "center", gap: 12, paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: colors.line }, avatar: { width: 43, height: 43, borderRadius: 22, backgroundColor: "#2A2118", alignItems: "center", justifyContent: "center" }, avatarText: { color: colors.goldSoft, fontWeight: "700" },
   customerForm: { backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, borderRadius: 18, padding: 16, marginBottom: 14 }, formTitle: { color: colors.text, fontSize: 18, fontWeight: "700", marginBottom: 7 }, formField: { minHeight: 49, borderRadius: 13, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.background, color: colors.text, paddingHorizontal: 14, marginTop: 6 }, notesField: { minHeight: 72, paddingTop: 13, textAlignVertical: "top" }, loading: { alignItems: "center", gap: 12, paddingVertical: 40 }, emptyState: { alignItems: "center", gap: 8, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, borderRadius: 18, padding: 28, marginTop: 8 }, emptyTitle: { color: colors.text, fontSize: 17, fontWeight: "700" }, emptyText: { color: colors.muted, fontSize: 12, lineHeight: 18, textAlign: "center" },
