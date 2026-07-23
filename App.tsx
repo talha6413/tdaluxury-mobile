@@ -22,6 +22,7 @@ type AppointmentStatus = "pending" | "confirmed" | "completed" | "cancelled" | "
 type LiveAppointment = { id: string; starts_at: string; ends_at: string; status: AppointmentStatus; notes: string; customers: { full_name: string } | null };
 type PaymentMethod = "cash" | "card" | "transfer" | "other";
 type LivePayment = { id: string; amount: number; method: PaymentMethod; paid_at: string; notes: string; customers: { full_name: string } | null };
+type Expense = { id: string; title: string; amount: number; category: string; paid_at: string; notes: string };
 type CustomerPackage = { id: string; customer_id: string; title: string; total_sessions: number; used_sessions: number; total_amount: number; paid_amount: number; active: boolean };
 type CustomerHistory = { id: string; kind: "session" | "payment"; title: string; detail: string; occurred_at: string; amount?: number };
 type CustomerPhoto = { id: string; storage_path: string; category: string; taken_at: string; signed_url?: string };
@@ -218,6 +219,17 @@ function Appointments() {
     Alert.alert("Randevu oluşturuldu", "Randevu takvime başarıyla eklendi.");
   }
 
+  async function updateAppointmentStatus(id: string, status: AppointmentStatus) {
+    if (!supabase) return;
+    const previous = items;
+    setItems(current => current.map(item => item.id === id ? { ...item, status } : item));
+    const { error } = await supabase.from("appointments").update({ status }).eq("id", id);
+    if (error) {
+      setItems(previous);
+      Alert.alert("Durum güncellenemedi", error.message);
+    }
+  }
+
   const statusLabel: Record<AppointmentStatus, string> = { pending: "Bekliyor", confirmed: "Onaylandı", completed: "Tamamlandı", cancelled: "İptal", no_show: "Gelmedi" };
   return <>
     <PageTitle title="Randevular" subtitle={`${items.length} yaklaşan randevu`} action={showForm ? "Formu kapat" : "Yeni randevu"} onAction={() => { setFormError(""); setShowForm(value => !value); }} />
@@ -232,7 +244,7 @@ function Appointments() {
       {!!formError && <Text style={styles.error}>{formError}</Text>}
       <TouchableOpacity style={styles.primaryButton} onPress={() => void saveAppointment()} disabled={saving}>{saving ? <ActivityIndicator color={colors.background} /> : <Text style={styles.primaryButtonText}>RANDEVUYU KAYDET</Text>}</TouchableOpacity>
     </View>}
-    {loading ? <View style={styles.loading}><ActivityIndicator color={colors.gold} /><Text style={styles.emptyText}>Randevular yükleniyor…</Text></View> : items.length === 0 ? <View style={styles.emptyState}><CalendarDays color={colors.gold} size={30} /><Text style={styles.emptyTitle}>Yaklaşan randevu yok</Text><Text style={styles.emptyText}>Yeni randevu düğmesiyle takvime kayıt ekleyebilirsiniz.</Text></View> : items.map(item => { const start = new Date(item.starts_at); return <View style={styles.appointment} key={item.id}><View style={styles.time}><Text style={styles.timeText}>{start.toLocaleTimeString("tr-TR", { hour: "2-digit", minute: "2-digit" })}</Text><Text style={styles.dateMini}>{start.toLocaleDateString("tr-TR", { day: "2-digit", month: "2-digit" })}</Text></View><View style={styles.grow}><Text style={styles.rowTitle}>{item.customers?.full_name ?? "Müşteri"}</Text><Text style={styles.rowSub}>{item.notes || "İşlem bilgisi girilmedi"}</Text></View><Text style={[styles.status, (item.status === "cancelled" || item.status === "no_show") && styles.statusDanger]}>{statusLabel[item.status]}</Text></View>; })}
+    {loading ? <View style={styles.loading}><ActivityIndicator color={colors.gold} /><Text style={styles.emptyText}>Randevular yükleniyor…</Text></View> : items.length === 0 ? <View style={styles.emptyState}><CalendarDays color={colors.gold} size={30} /><Text style={styles.emptyTitle}>Yaklaşan randevu yok</Text><Text style={styles.emptyText}>Yeni randevu düğmesiyle takvime kayıt ekleyebilirsiniz.</Text></View> : items.map(item => { const start = new Date(item.starts_at); return <View style={styles.appointmentCard} key={item.id}><View style={styles.appointment}><View style={styles.time}><Text style={styles.timeText}>{start.toLocaleTimeString("tr-TR", { hour: "2-digit", minute: "2-digit" })}</Text><Text style={styles.dateMini}>{start.toLocaleDateString("tr-TR", { day: "2-digit", month: "2-digit" })}</Text></View><View style={styles.grow}><Text style={styles.rowTitle}>{item.customers?.full_name ?? "Müşteri"}</Text><Text style={styles.rowSub}>{item.notes || "İşlem bilgisi girilmedi"}</Text></View><Text style={[styles.status, (item.status === "cancelled" || item.status === "no_show") && styles.statusDanger]}>{statusLabel[item.status]}</Text></View><ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.statusActions}>{([["confirmed", "Onayla"], ["completed", "Tamamla"], ["no_show", "Gelmedi"], ["cancelled", "İptal"]] as [AppointmentStatus, string][]).map(([value, label]) => <TouchableOpacity key={value} style={[styles.statusButton, item.status === value && styles.choiceActive]} onPress={() => void updateAppointmentStatus(item.id, value)}><Text style={[styles.statusButtonText, item.status === value && styles.choiceTextActive]}>{label}</Text></TouchableOpacity>)}</ScrollView></View>; })}
   </>;
 }
 
@@ -392,6 +404,7 @@ function Customers() {
 
 function Finance() {
   const [payments, setPayments] = useState<LivePayment[]>([]);
+  const [expenses, setExpenses] = useState<Expense[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -401,18 +414,23 @@ function Finance() {
   const [method, setMethod] = useState<PaymentMethod>("cash");
   const [notes, setNotes] = useState("");
   const [formError, setFormError] = useState("");
+  const [formMode, setFormMode] = useState<"payment" | "expense">("payment");
+  const [expenseTitle, setExpenseTitle] = useState("");
+  const [expenseCategory, setExpenseCategory] = useState("Genel");
 
   async function loadFinance() {
     if (!supabase) { setLoading(false); return; }
     setLoading(true);
     const today = new Date(); today.setHours(0, 0, 0, 0);
-    const [paymentResult, customerResult] = await Promise.all([
+    const [paymentResult, expenseResult, customerResult] = await Promise.all([
       supabase.from("payments").select("id,amount,method,paid_at,notes,customers(full_name)").gte("paid_at", today.toISOString()).order("paid_at", { ascending: false }).limit(100),
+      supabase.from("expenses").select("id,title,amount,category,paid_at,notes").gte("paid_at", today.toISOString()).order("paid_at", { ascending: false }).limit(100),
       supabase.from("customers").select("id,full_name,phone,email,notes,active").eq("active", true).order("full_name"),
     ]);
     setLoading(false);
     if (paymentResult.error) { Alert.alert("Kasa yüklenemedi", paymentResult.error.message); return; }
     setPayments((paymentResult.data ?? []) as unknown as LivePayment[]);
+    setExpenses((expenseResult.data ?? []) as Expense[]);
     setCustomers((customerResult.data ?? []) as Customer[]);
   }
 
@@ -431,34 +449,51 @@ function Finance() {
     Alert.alert("Tahsilat kaydedildi", `${formatMoney(numericAmount)} kasa hareketlerine eklendi.`);
   }
 
+  async function saveExpense() {
+    if (!supabase) { setFormError("Supabase bağlantısı hazır değil."); return; }
+    const numericAmount = Number(amount.replace(",", "."));
+    if (!expenseTitle.trim() || !Number.isFinite(numericAmount) || numericAmount <= 0) { setFormError("Gider adı ve geçerli tutar zorunludur."); return; }
+    setSaving(true); setFormError("");
+    const { error } = await supabase.from("expenses").insert({ title: expenseTitle.trim(), amount: numericAmount, category: expenseCategory.trim() || "Genel", notes: notes.trim() });
+    setSaving(false);
+    if (error) { setFormError(error.message); return; }
+    setAmount(""); setNotes(""); setExpenseTitle(""); setExpenseCategory("Genel"); setShowForm(false);
+    await loadFinance();
+    Alert.alert("Gider kaydedildi", `${formatMoney(numericAmount)} kasadan gider olarak işlendi.`);
+  }
+
   const total = payments.reduce((sum, payment) => sum + Number(payment.amount), 0);
   const cash = payments.filter(payment => payment.method === "cash").reduce((sum, payment) => sum + Number(payment.amount), 0);
   const card = payments.filter(payment => payment.method === "card").reduce((sum, payment) => sum + Number(payment.amount), 0);
   const transfer = payments.filter(payment => payment.method === "transfer").reduce((sum, payment) => sum + Number(payment.amount), 0);
+  const expenseTotal = expenses.reduce((sum, expense) => sum + Number(expense.amount), 0);
+  const netTotal = total - expenseTotal;
   const methodLabels: Record<PaymentMethod, string> = { cash: "Nakit", card: "Kart", transfer: "Havale", other: "Diğer" };
 
   return <>
-    <PageTitle title="Kasa & Finans" subtitle="Bugünkü canlı tahsilatlar" action={showForm ? "Formu kapat" : "Tahsilat ekle"} onAction={() => { setFormError(""); setShowForm(value => !value); }} />
+    <PageTitle title="Kasa & Finans" subtitle="Gelir, gider ve net kasa" action={showForm ? "Formu kapat" : "Yeni hareket"} onAction={() => { setFormError(""); setShowForm(value => !value); }} />
     {showForm && <View style={styles.customerForm}>
-      <Text style={styles.formTitle}>Yeni tahsilat</Text>
-      <Text style={styles.inputLabel}>Müşteri *</Text><ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.choiceScroll}>{customers.map(customer => <TouchableOpacity key={customer.id} style={[styles.choice, selectedCustomer === customer.id && styles.choiceActive]} onPress={() => setSelectedCustomer(customer.id)}><Text style={[styles.choiceText, selectedCustomer === customer.id && styles.choiceTextActive]}>{customer.full_name}</Text></TouchableOpacity>)}</ScrollView>
+      <View style={styles.methodGrid}><TouchableOpacity style={[styles.methodChoice, formMode === "payment" && styles.choiceActive]} onPress={() => setFormMode("payment")}><Text style={[styles.choiceText, formMode === "payment" && styles.choiceTextActive]}>Tahsilat</Text></TouchableOpacity><TouchableOpacity style={[styles.methodChoice, formMode === "expense" && styles.choiceActive]} onPress={() => setFormMode("expense")}><Text style={[styles.choiceText, formMode === "expense" && styles.choiceTextActive]}>Gider</Text></TouchableOpacity></View>
+      <Text style={styles.formTitle}>{formMode === "payment" ? "Yeni tahsilat" : "Yeni gider"}</Text>
+      {formMode === "payment" ? <><Text style={styles.inputLabel}>Müşteri *</Text><ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.choiceScroll}>{customers.map(customer => <TouchableOpacity key={customer.id} style={[styles.choice, selectedCustomer === customer.id && styles.choiceActive]} onPress={() => setSelectedCustomer(customer.id)}><Text style={[styles.choiceText, selectedCustomer === customer.id && styles.choiceTextActive]}>{customer.full_name}</Text></TouchableOpacity>)}</ScrollView></> : <><Text style={styles.inputLabel}>Gider adı *</Text><TextInput value={expenseTitle} onChangeText={setExpenseTitle} placeholder="Örn. Reklam ödemesi" placeholderTextColor={colors.muted} style={styles.formField} /><Text style={styles.inputLabel}>Kategori</Text><TextInput value={expenseCategory} onChangeText={setExpenseCategory} placeholder="Kira, reklam, maaş..." placeholderTextColor={colors.muted} style={styles.formField} /></>}
       <Text style={styles.inputLabel}>Tutar (₺) *</Text><TextInput value={amount} onChangeText={setAmount} keyboardType="decimal-pad" placeholder="2500" placeholderTextColor={colors.muted} style={styles.formField} />
-      <Text style={styles.inputLabel}>Ödeme yöntemi</Text><View style={styles.methodGrid}>{(["cash", "card", "transfer", "other"] as PaymentMethod[]).map(value => <TouchableOpacity key={value} style={[styles.methodChoice, method === value && styles.choiceActive]} onPress={() => setMethod(value)}><Text style={[styles.choiceText, method === value && styles.choiceTextActive]}>{methodLabels[value]}</Text></TouchableOpacity>)}</View>
+      {formMode === "payment" && <><Text style={styles.inputLabel}>Ödeme yöntemi</Text><View style={styles.methodGrid}>{(["cash", "card", "transfer", "other"] as PaymentMethod[]).map(value => <TouchableOpacity key={value} style={[styles.methodChoice, method === value && styles.choiceActive]} onPress={() => setMethod(value)}><Text style={[styles.choiceText, method === value && styles.choiceTextActive]}>{methodLabels[value]}</Text></TouchableOpacity>)}</View></>}
       <Text style={styles.inputLabel}>Açıklama</Text><TextInput value={notes} onChangeText={setNotes} placeholder="Örn. Lazer paket taksiti" placeholderTextColor={colors.muted} style={styles.formField} />
       {!!formError && <Text style={styles.error}>{formError}</Text>}
-      <TouchableOpacity style={styles.primaryButton} onPress={() => void savePayment()} disabled={saving}>{saving ? <ActivityIndicator color={colors.background} /> : <Text style={styles.primaryButtonText}>TAHSİLATI KAYDET</Text>}</TouchableOpacity>
+      <TouchableOpacity style={styles.primaryButton} onPress={() => void (formMode === "payment" ? savePayment() : saveExpense())} disabled={saving}>{saving ? <ActivityIndicator color={colors.background} /> : <Text style={styles.primaryButtonText}>{formMode === "payment" ? "TAHSİLATI KAYDET" : "GİDERİ KAYDET"}</Text>}</TouchableOpacity>
     </View>}
-    <View style={styles.balance}><Text style={styles.balanceLabel}>BUGÜNKÜ TAHSİLAT</Text><Text style={styles.balanceValue}>{formatMoney(total)}</Text><Text style={styles.balanceHint}>{payments.length} ödeme hareketi</Text></View>
-    <View style={styles.metricGrid}><View style={styles.metric}><Text style={styles.metricValue}>{formatMoney(cash)}</Text><Text style={styles.metricLabel}>Nakit</Text></View><View style={styles.metric}><Text style={styles.metricValue}>{formatMoney(card)}</Text><Text style={styles.metricLabel}>Kart</Text></View><View style={styles.metric}><Text style={styles.metricValue}>{formatMoney(transfer)}</Text><Text style={styles.metricLabel}>Havale</Text></View></View>
+    <View style={styles.balance}><Text style={styles.balanceLabel}>BUGÜNKÜ NET KASA</Text><Text style={styles.balanceValue}>{formatMoney(netTotal)}</Text><Text style={styles.balanceHint}>{formatMoney(total)} gelir · {formatMoney(expenseTotal)} gider</Text></View>
+    <View style={styles.metricGrid}><View style={styles.metric}><Text style={styles.metricValue}>{formatMoney(cash)}</Text><Text style={styles.metricLabel}>Nakit</Text></View><View style={styles.metric}><Text style={styles.metricValue}>{formatMoney(card)}</Text><Text style={styles.metricLabel}>Kart</Text></View><View style={styles.metric}><Text style={[styles.metricValue, styles.negative]}>-{formatMoney(expenseTotal)}</Text><Text style={styles.metricLabel}>Gider</Text></View></View>
     <SectionTitle title="Bugünkü hareketler" />
     {loading ? <View style={styles.loading}><ActivityIndicator color={colors.gold} /></View> : payments.length === 0 ? <View style={styles.emptyState}><WalletCards color={colors.gold} size={30} /><Text style={styles.emptyTitle}>Bugün tahsilat yok</Text><Text style={styles.emptyText}>İlk ödemeyi tahsilat ekle düğmesiyle kaydedebilirsiniz.</Text></View> : payments.map(payment => <View style={styles.transaction} key={payment.id}><View style={styles.transactionIcon}><CircleDollarSign size={19} color={colors.gold} /></View><View style={styles.grow}><Text style={styles.rowTitle}>{payment.customers?.full_name ?? "Müşteri"}</Text><Text style={styles.rowSub}>{methodLabels[payment.method]} · {payment.notes || new Date(payment.paid_at).toLocaleTimeString("tr-TR", { hour: "2-digit", minute: "2-digit" })}</Text></View><Text style={styles.amount}>+{formatMoney(Number(payment.amount))}</Text></View>)}
+    {expenses.map(expense => <View style={styles.transaction} key={expense.id}><View style={[styles.transactionIcon, styles.criticalIcon]}><CircleDollarSign size={19} color={colors.danger} /></View><View style={styles.grow}><Text style={styles.rowTitle}>{expense.title}</Text><Text style={styles.rowSub}>{expense.category} · {expense.notes || new Date(expense.paid_at).toLocaleTimeString("tr-TR", { hour: "2-digit", minute: "2-digit" })}</Text></View><Text style={styles.negative}>-{formatMoney(Number(expense.amount))}</Text></View>)}
   </>;
 }
 
 function formatMoney(value: number) { return new Intl.NumberFormat("tr-TR", { style: "currency", currency: "TRY", maximumFractionDigits: 0 }).format(value); }
 
 function Profile({ role, signOut }: { role: Role; signOut: () => void }) {
-  const [section, setSection] = useState<"account" | "staff" | "devices" | "stock">("account");
+  const [section, setSection] = useState<"account" | "reports" | "staff" | "devices" | "stock">("account");
   const [staff, setStaff] = useState<StaffMember[]>([]);
   const [devices, setDevices] = useState<Device[]>([]);
   const [stock, setStock] = useState<StockItem[]>([]);
@@ -470,11 +505,32 @@ function Profile({ role, signOut }: { role: Role; signOut: () => void }) {
   const [minimum, setMinimum] = useState("0");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const [reports, setReports] = useState({ revenue: 0, expenses: 0, appointments: 0, completed: 0, cancelled: 0, customers: 0, debt: 0 });
 
   async function loadOperations(next: typeof section) {
     setSection(next); setShowForm(false); setError("");
     if (!supabase || next === "account") return;
     setLoading(true);
+    if (next === "reports") {
+      const from = new Date(); from.setDate(from.getDate() - 29); from.setHours(0, 0, 0, 0);
+      const [paymentResult, expenseResult, appointmentResult, customerResult, packageResult] = await Promise.all([
+        supabase.from("payments").select("amount").gte("paid_at", from.toISOString()),
+        supabase.from("expenses").select("amount").gte("paid_at", from.toISOString()),
+        supabase.from("appointments").select("status").gte("starts_at", from.toISOString()),
+        supabase.from("customers").select("id", { count: "exact", head: true }).eq("active", true),
+        supabase.from("customer_packages").select("total_amount,paid_amount").eq("active", true),
+      ]);
+      const appointmentRows = appointmentResult.data ?? [];
+      setReports({
+        revenue: (paymentResult.data ?? []).reduce((sum, item) => sum + Number(item.amount || 0), 0),
+        expenses: (expenseResult.data ?? []).reduce((sum, item) => sum + Number(item.amount || 0), 0),
+        appointments: appointmentRows.length,
+        completed: appointmentRows.filter(item => item.status === "completed").length,
+        cancelled: appointmentRows.filter(item => item.status === "cancelled" || item.status === "no_show").length,
+        customers: customerResult.count ?? 0,
+        debt: (packageResult.data ?? []).reduce((sum, item) => sum + Math.max(0, Number(item.total_amount || 0) - Number(item.paid_amount || 0)), 0),
+      });
+    }
     if (next === "staff") { const { data, error: loadError } = await supabase.from("staff_members").select("id,display_name,title,phone,active").eq("active", true).order("display_name"); if (loadError) setError(loadError.message); else setStaff((data ?? []) as StaffMember[]); }
     if (next === "devices") { const { data, error: loadError } = await supabase.from("devices").select("id,name,model,room,shot_count,maintenance_due,active").eq("active", true).order("name"); if (loadError) setError(loadError.message); else setDevices((data ?? []) as Device[]); }
     if (next === "stock") { const { data, error: loadError } = await supabase.from("stock_items").select("id,name,unit,quantity,min_quantity,active").eq("active", true).order("name"); if (loadError) setError(loadError.message); else setStock((data ?? []) as StockItem[]); }
@@ -496,17 +552,35 @@ function Profile({ role, signOut }: { role: Role; signOut: () => void }) {
     setSaving(false); setName(""); setSecondary(""); setQuantity("0"); setMinimum("0"); setShowForm(false);
   }
 
-  const tabs = [["account", "Hesap"], ["staff", "Personel"], ["devices", "Cihazlar"], ["stock", "Stok"]] as const;
+  async function changeStock(item: StockItem, delta: number) {
+    if (!supabase || role !== "admin") return;
+    const next = Math.max(0, Number(item.quantity) + delta);
+    const { error: updateError } = await supabase.from("stock_items").update({ quantity: next }).eq("id", item.id);
+    if (updateError) return Alert.alert("Stok güncellenemedi", updateError.message);
+    setStock(current => current.map(row => row.id === item.id ? { ...row, quantity: next } : row));
+  }
+
+  async function addDeviceShots(item: Device, amount = 1000) {
+    if (!supabase || role !== "admin") return;
+    const next = Number(item.shot_count) + amount;
+    const { error: updateError } = await supabase.from("devices").update({ shot_count: next }).eq("id", item.id);
+    if (updateError) return Alert.alert("Cihaz güncellenemedi", updateError.message);
+    setDevices(current => current.map(row => row.id === item.id ? { ...row, shot_count: next } : row));
+  }
+
+  const completionRate = reports.appointments ? Math.round((reports.completed / reports.appointments) * 100) : 0;
+  const tabs = [["account", "Hesap"], ["reports", "Raporlar"], ["staff", "Personel"], ["devices", "Cihazlar"], ["stock", "Stok"]] as const;
   return <>
     <PageTitle title="Yönetim" subtitle={`${roleLabels[role]} hesabı`} action={role === "admin" && (section === "devices" || section === "stock") ? (showForm ? "Formu kapat" : "Yeni ekle") : undefined} onAction={() => setShowForm(value => !value)} />
     <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.manageTabs}>{tabs.map(([id, label]) => <TouchableOpacity key={id} style={[styles.manageTab, section === id && styles.choiceActive]} onPress={() => void loadOperations(id)}><Text style={[styles.choiceText, section === id && styles.choiceTextActive]}>{label}</Text></TouchableOpacity>)}</ScrollView>
     {showForm && <View style={styles.customerForm}><Text style={styles.formTitle}>{section === "devices" ? "Yeni cihaz" : "Yeni stok kalemi"}</Text><Text style={styles.inputLabel}>Ad *</Text><TextInput value={name} onChangeText={setName} style={styles.formField} placeholder={section === "devices" ? "Aphro Prime" : "Lazer jeli"} placeholderTextColor={colors.muted} /><Text style={styles.inputLabel}>{section === "devices" ? "Model" : "Birim"}</Text><TextInput value={secondary} onChangeText={setSecondary} style={styles.formField} placeholder={section === "devices" ? "Diode" : "adet / litre"} placeholderTextColor={colors.muted} /><Text style={styles.inputLabel}>{section === "devices" ? "Atış sayısı" : "Miktar"}</Text><TextInput value={quantity} onChangeText={setQuantity} keyboardType="decimal-pad" style={styles.formField} />{section === "stock" && <><Text style={styles.inputLabel}>Kritik stok sınırı</Text><TextInput value={minimum} onChangeText={setMinimum} keyboardType="decimal-pad" style={styles.formField} /></>}{!!error && <Text style={styles.error}>{error}</Text>}<TouchableOpacity style={styles.primaryButton} onPress={() => void saveOperation()} disabled={saving}>{saving ? <ActivityIndicator color={colors.background} /> : <Text style={styles.primaryButtonText}>KAYDET</Text>}</TouchableOpacity></View>}
     {section === "account" && <><View style={styles.profileCard}><View style={styles.profileAvatar}><Text style={styles.profileInitial}>T</Text></View><Text style={styles.profileName}>Talha</Text><Text style={styles.rowSub}>talha6413@gmail.com</Text></View><TouchableOpacity style={styles.setting}><Settings size={18} color={colors.gold} /><Text style={styles.settingText}>Bildirim ve güvenlik ayarları</Text><ChevronRight size={18} color={colors.muted} /></TouchableOpacity><TouchableOpacity style={styles.logout} onPress={signOut}><Text style={styles.logoutText}>Güvenli çıkış yap</Text></TouchableOpacity></>}
+    {section === "reports" && !loading && <><View style={styles.balance}><Text style={styles.balanceLabel}>SON 30 GÜN NET KAZANÇ</Text><Text style={styles.balanceValue}>{formatMoney(reports.revenue - reports.expenses)}</Text><Text style={styles.balanceHint}>{formatMoney(reports.revenue)} gelir · {formatMoney(reports.expenses)} gider</Text></View><View style={styles.reportGrid}><View style={styles.reportCard}><Text style={styles.reportValue}>{reports.customers}</Text><Text style={styles.metricLabel}>Aktif müşteri</Text></View><View style={styles.reportCard}><Text style={styles.reportValue}>{reports.completed}</Text><Text style={styles.metricLabel}>Tamamlanan · %{completionRate}</Text></View><View style={styles.reportCard}><Text style={[styles.reportValue, styles.negative]}>{reports.cancelled}</Text><Text style={styles.metricLabel}>İptal / gelmedi</Text></View><View style={styles.reportCard}><Text style={styles.reportValue}>{formatMoney(reports.debt)}</Text><Text style={styles.metricLabel}>Açık paket borcu</Text></View></View><View style={styles.reportInfo}><Text style={styles.alertTitle}>Yönetici raporu</Text><Text style={styles.alertText}>Gelir, gider, randevu performansı, müşteri sayısı ve açık paket borçları Supabase kayıtlarından canlı hesaplanır.</Text></View></>}
     {loading && <View style={styles.loading}><ActivityIndicator color={colors.gold} /></View>}
     {!!error && !showForm && <Text style={styles.error}>{error}</Text>}
     {section === "staff" && staff.map(item => <View style={styles.manageRow} key={item.id}><View style={styles.avatar}><Text style={styles.avatarText}>{item.display_name.slice(0, 2).toLocaleUpperCase("tr")}</Text></View><View style={styles.grow}><Text style={styles.rowTitle}>{item.display_name}</Text><Text style={styles.rowSub}>{item.title}{item.phone ? ` · ${item.phone}` : ""}</Text></View><Text style={styles.status}>Aktif</Text></View>)}
-    {section === "devices" && devices.map(item => <View style={styles.manageRow} key={item.id}><View style={styles.transactionIcon}><Settings size={18} color={colors.gold} /></View><View style={styles.grow}><Text style={styles.rowTitle}>{item.name}</Text><Text style={styles.rowSub}>{item.model || "Model yok"}{item.room ? ` · ${item.room}` : ""}</Text><Text style={styles.historyDate}>{Number(item.shot_count).toLocaleString("tr-TR")} atış{item.maintenance_due ? ` · Bakım ${new Date(item.maintenance_due).toLocaleDateString("tr-TR")}` : ""}</Text></View></View>)}
-    {section === "stock" && stock.map(item => { const critical = Number(item.quantity) <= Number(item.min_quantity); return <View style={styles.manageRow} key={item.id}><View style={[styles.transactionIcon, critical && styles.criticalIcon]}><PackageCheck size={18} color={critical ? colors.danger : colors.gold} /></View><View style={styles.grow}><Text style={styles.rowTitle}>{item.name}</Text><Text style={styles.rowSub}>{item.quantity} {item.unit} · Alt sınır {item.min_quantity}</Text></View><Text style={[styles.status, critical && styles.statusDanger]}>{critical ? "Kritik" : "Yeterli"}</Text></View>; })}
+    {section === "devices" && devices.map(item => <View style={styles.manageRow} key={item.id}><View style={styles.transactionIcon}><Settings size={18} color={colors.gold} /></View><View style={styles.grow}><Text style={styles.rowTitle}>{item.name}</Text><Text style={styles.rowSub}>{item.model || "Model yok"}{item.room ? ` · ${item.room}` : ""}</Text><Text style={styles.historyDate}>{Number(item.shot_count).toLocaleString("tr-TR")} atış{item.maintenance_due ? ` · Bakım ${new Date(item.maintenance_due).toLocaleDateString("tr-TR")}` : ""}</Text></View>{role === "admin" && <TouchableOpacity style={styles.counterButton} onPress={() => void addDeviceShots(item)}><Text style={styles.counterText}>+1.000</Text></TouchableOpacity>}</View>)}
+    {section === "stock" && stock.map(item => { const critical = Number(item.quantity) <= Number(item.min_quantity); return <View style={styles.manageRow} key={item.id}><View style={[styles.transactionIcon, critical && styles.criticalIcon]}><PackageCheck size={18} color={critical ? colors.danger : colors.gold} /></View><View style={styles.grow}><Text style={styles.rowTitle}>{item.name}</Text><Text style={styles.rowSub}>{item.quantity} {item.unit} · Alt sınır {item.min_quantity}</Text><Text style={[styles.status, critical && styles.statusDanger]}>{critical ? "Kritik stok" : "Yeterli"}</Text></View>{role === "admin" && <View style={styles.counterGroup}><TouchableOpacity style={styles.counterButton} onPress={() => void changeStock(item, -1)}><Text style={styles.counterText}>−</Text></TouchableOpacity><TouchableOpacity style={styles.counterButton} onPress={() => void changeStock(item, 1)}><Text style={styles.counterText}>+</Text></TouchableOpacity></View>}</View>; })}
   </>;
 }
 
@@ -525,6 +599,7 @@ const styles = StyleSheet.create({
   heroCard: { backgroundColor: colors.surface, borderWidth: 1, borderColor: "#403520", borderRadius: 24, padding: 22, gap: 23 }, heroKicker: { color: colors.gold, fontSize: 10, letterSpacing: 2 }, heroTitle: { color: colors.text, fontSize: 27, lineHeight: 33, fontWeight: "600", marginTop: 9 }, heroText: { color: colors.muted, lineHeight: 21, marginTop: 8 }, heroAction: { alignSelf: "flex-start", backgroundColor: colors.goldSoft, paddingHorizontal: 16, paddingVertical: 12, borderRadius: 12, flexDirection: "row", gap: 8, alignItems: "center" }, heroActionText: { color: colors.background, fontWeight: "800", fontSize: 12 }, metricGrid: { flexDirection: "row", gap: 9, marginTop: 13 }, metric: { flex: 1, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, borderRadius: 17, padding: 14 }, metricValue: { color: colors.text, fontWeight: "700", fontSize: 19 }, metricLabel: { color: colors.muted, fontSize: 10, marginTop: 5 },
   dashboardLoading: { minHeight: 82, marginTop: 13, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, borderRadius: 17, alignItems: "center", justifyContent: "center", gap: 8 }, alertCard: { flexDirection: "row", gap: 12, backgroundColor: "#201515", borderWidth: 1, borderColor: "#512A2A", borderRadius: 17, padding: 15, marginTop: 12 }, alertTitle: { color: colors.text, fontSize: 13, fontWeight: "700", marginBottom: 4 }, alertText: { color: colors.muted, fontSize: 11, lineHeight: 17 },
   sectionTitle: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginTop: 25, marginBottom: 11 }, sectionHeading: { color: colors.text, fontSize: 19, fontWeight: "600" }, sectionAction: { color: colors.gold, fontSize: 12 }, appointment: { flexDirection: "row", alignItems: "center", gap: 13, backgroundColor: colors.surface, borderBottomWidth: 1, borderBottomColor: colors.line, padding: 14 }, time: { width: 54, alignItems: "center", gap: 4 }, timeText: { color: colors.goldSoft, fontWeight: "700" }, grow: { flex: 1 }, rowTitle: { color: colors.text, fontWeight: "600", fontSize: 14 }, rowSub: { color: colors.muted, fontSize: 12, marginTop: 4 }, status: { color: colors.success, fontSize: 9 }, chevron: { alignSelf: "flex-end", marginTop: 5 }, quickGrid: { flexDirection: "row", gap: 8 }, quick: { flex: 1, backgroundColor: colors.surface, borderRadius: 15, borderWidth: 1, borderColor: colors.line, paddingVertical: 14, alignItems: "center", gap: 8 }, quickIcon: { width: 38, height: 38, borderRadius: 12, backgroundColor: "#221D16", alignItems: "center", justifyContent: "center" }, quickText: { color: colors.text, fontSize: 10 }, packageCard: { flexDirection: "row", alignItems: "center", gap: 12, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, borderRadius: 18, padding: 16 }, packageIcon: { width: 44, height: 44, borderRadius: 14, backgroundColor: "#241E16", alignItems: "center", justifyContent: "center" }, progress: { height: 4, backgroundColor: colors.line, borderRadius: 2, marginTop: 11 }, progressFill: { width: "38%", height: 4, backgroundColor: colors.gold, borderRadius: 2 }, packageCount: { color: colors.goldSoft, fontSize: 22, fontWeight: "700" }, packageSmall: { fontSize: 9, color: colors.muted },
+  appointmentCard: { backgroundColor: colors.surface, borderBottomWidth: 1, borderBottomColor: colors.line }, statusActions: { gap: 7, paddingHorizontal: 13, paddingBottom: 12 }, statusButton: { borderWidth: 1, borderColor: colors.line, borderRadius: 10, paddingHorizontal: 11, paddingVertical: 7 }, statusButtonText: { color: colors.muted, fontSize: 10 },
   pageTitle: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 18 }, pageHeading: { color: colors.text, fontSize: 27, fontWeight: "700" }, pageSubtitle: { color: colors.muted, fontSize: 12, marginTop: 4 }, smallButton: { backgroundColor: colors.goldSoft, borderRadius: 11, paddingVertical: 10, paddingHorizontal: 11, flexDirection: "row", gap: 5, alignItems: "center" }, smallButtonText: { color: colors.background, fontWeight: "700", fontSize: 10 }, search: { height: 49, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, borderRadius: 14, flexDirection: "row", alignItems: "center", paddingHorizontal: 14, marginBottom: 12 }, searchInput: { flex: 1, color: colors.text, paddingHorizontal: 10 }, customer: { flexDirection: "row", alignItems: "center", gap: 12, paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: colors.line }, avatar: { width: 43, height: 43, borderRadius: 22, backgroundColor: "#2A2118", alignItems: "center", justifyContent: "center" }, avatarText: { color: colors.goldSoft, fontWeight: "700" },
   customerForm: { backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, borderRadius: 18, padding: 16, marginBottom: 14 }, formTitle: { color: colors.text, fontSize: 18, fontWeight: "700", marginBottom: 7 }, formField: { minHeight: 49, borderRadius: 13, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.background, color: colors.text, paddingHorizontal: 14, marginTop: 6 }, notesField: { minHeight: 72, paddingTop: 13, textAlignVertical: "top" }, loading: { alignItems: "center", gap: 12, paddingVertical: 40 }, emptyState: { alignItems: "center", gap: 8, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, borderRadius: 18, padding: 28, marginTop: 8 }, emptyTitle: { color: colors.text, fontSize: 17, fontWeight: "700" }, emptyText: { color: colors.muted, fontSize: 12, lineHeight: 18, textAlign: "center" },
   choiceScroll: { marginTop: 8, marginBottom: 4 }, choice: { borderWidth: 1, borderColor: colors.line, backgroundColor: colors.background, borderRadius: 20, paddingHorizontal: 13, paddingVertical: 9, marginRight: 8 }, choiceActive: { backgroundColor: colors.goldSoft, borderColor: colors.goldSoft }, choiceText: { color: colors.text, fontSize: 12 }, choiceTextActive: { color: colors.background, fontWeight: "700" }, formRow: { flexDirection: "row", gap: 9 }, formHalf: { flex: 1 }, dateMini: { color: colors.muted, fontSize: 9 }, statusDanger: { color: colors.danger },
@@ -533,6 +608,8 @@ const styles = StyleSheet.create({
   historyRow: { flexDirection: "row", alignItems: "center", gap: 11, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: colors.line }, historyIcon: { width: 36, height: 36, borderRadius: 11, backgroundColor: "#2A2118", alignItems: "center", justifyContent: "center" }, historyPayment: { backgroundColor: "#13271F" }, historyDate: { color: colors.muted, fontSize: 9, marginTop: 5 },
   photoTitle: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" }, photoButton: { backgroundColor: colors.goldSoft, borderRadius: 10, paddingHorizontal: 12, paddingVertical: 9, minWidth: 76, alignItems: "center" }, photoButtonText: { color: colors.background, fontSize: 10, fontWeight: "800" }, photoGrid: { flexDirection: "row", flexWrap: "wrap", gap: 8 }, photoItem: { width: "31%", backgroundColor: colors.background, borderRadius: 12, overflow: "hidden" }, photoImage: { width: "100%", aspectRatio: 0.8, backgroundColor: colors.line }, photoDate: { color: colors.muted, fontSize: 8, padding: 6, textAlign: "center" },
   manageTabs: { marginBottom: 16 }, manageTab: { borderWidth: 1, borderColor: colors.line, borderRadius: 18, paddingHorizontal: 14, paddingVertical: 9, marginRight: 7 }, manageRow: { flexDirection: "row", alignItems: "center", gap: 11, paddingVertical: 13, borderBottomWidth: 1, borderBottomColor: colors.line }, criticalIcon: { backgroundColor: "#301A1A" },
+  counterGroup: { flexDirection: "row", gap: 5 }, counterButton: { minWidth: 35, height: 35, borderWidth: 1, borderColor: "#4A3D2B", borderRadius: 10, alignItems: "center", justifyContent: "center", paddingHorizontal: 7 }, counterText: { color: colors.goldSoft, fontSize: 12, fontWeight: "800" },
+  reportGrid: { flexDirection: "row", flexWrap: "wrap", gap: 9, marginTop: 12 }, reportCard: { width: "48.5%", minHeight: 92, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, borderRadius: 17, padding: 15, justifyContent: "center" }, reportValue: { color: colors.text, fontSize: 21, fontWeight: "800", marginBottom: 4 }, reportInfo: { backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, borderRadius: 17, padding: 16, marginTop: 12 },
   balance: { backgroundColor: colors.goldSoft, borderRadius: 22, padding: 22 }, balanceLabel: { color: "#4B3B26", fontSize: 10, letterSpacing: 2 }, balanceValue: { color: colors.background, fontSize: 35, fontWeight: "800", marginTop: 8 }, balanceHint: { color: "#59482F", marginTop: 5, fontSize: 12 }, transaction: { flexDirection: "row", alignItems: "center", paddingVertical: 13, borderBottomWidth: 1, borderBottomColor: colors.line, gap: 11 }, transactionIcon: { width: 39, height: 39, backgroundColor: colors.surface, borderRadius: 12, alignItems: "center", justifyContent: "center" }, amount: { color: colors.success, fontWeight: "700" }, negative: { color: colors.danger },
   profileCard: { alignItems: "center", backgroundColor: colors.surface, borderRadius: 20, padding: 24, marginBottom: 17 }, profileAvatar: { width: 72, height: 72, borderRadius: 36, backgroundColor: colors.goldSoft, alignItems: "center", justifyContent: "center" }, profileInitial: { color: colors.background, fontSize: 30, fontWeight: "800" }, profileName: { color: colors.text, fontSize: 21, fontWeight: "700", marginTop: 12 }, setting: { flexDirection: "row", gap: 12, alignItems: "center", paddingVertical: 16, borderBottomWidth: 1, borderBottomColor: colors.line }, settingText: { flex: 1, color: colors.text }, logout: { borderWidth: 1, borderColor: "#5A2929", borderRadius: 13, alignItems: "center", padding: 15, marginTop: 25 }, logoutText: { color: colors.danger, fontWeight: "600" },
   tabs: { position: "absolute", left: 10, right: 10, bottom: 10, height: 72, borderRadius: 22, backgroundColor: "#15120F", borderWidth: 1, borderColor: colors.line, flexDirection: "row", alignItems: "center", justifyContent: "space-around", paddingHorizontal: 4 }, tab: { flex: 1, alignItems: "center", gap: 5 }, tabText: { color: colors.muted, fontSize: 9 }, tabActive: { color: colors.goldSoft, fontWeight: "700" },

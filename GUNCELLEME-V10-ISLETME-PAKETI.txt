@@ -1,0 +1,33 @@
+TDA LUXURY MOBİL V10 — KAPSAMLI İŞLETME PAKETİ
+
+YENİ ÖZELLİKLER
+- Randevu onaylama
+- Randevuyu tamamlandı olarak işaretleme
+- Gelmedi kaydı
+- Randevu iptal kaydı
+- Gider ekleme
+- Gider kategorisi ve açıklaması
+- Günlük gelir, gider ve net kasa
+- Son 30 günlük net kazanç raporu
+- Raporlarda toplam gider
+- Stok miktarını hızlı artırma ve azaltma
+- Cihaz atış sayısını hızlı güncelleme
+- Önceki V1-V9 özelliklerinin tamamı
+
+SUPABASE
+- supabase/v10-business-suite.sql gider tablosunu ve güvenlik kurallarını kurar.
+- Canlı Supabase projesine kurulum yapılmıştır.
+
+YEREL KURULUM
+1. Paket içeriğini mobil uygulama klasörüne çıkarın.
+2. Mevcut .env dosyanızı koruyun.
+3. npm install
+4. npm run typecheck
+5. git add .
+6. git commit -m "V10 kapsamlı işletme paketini ekle"
+7. git push origin main
+8. npx expo start -c
+
+GÜVENLİK
+- .env dosyası pakete dahil edilmemiştir.
+- Supabase service-role anahtarı mobil uygulamada kullanılmaz.

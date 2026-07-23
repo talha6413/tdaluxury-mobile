@@ -1,0 +1,22 @@
+TDA LUXURY MOBİL V8
+
+Bu sürümde:
+- Yönetici ana ekranındaki örnek rakamlar kaldırıldı.
+- Bugünkü randevu sayısı Supabase'den canlı yüklenir.
+- Günlük tahsilat Supabase ödemelerinden hesaplanır.
+- Bekleyen randevu sayısı canlı gösterilir.
+- Yaklaşan ilk üç randevu canlı listelenir.
+- Kritik stoklar için yönetici uyarısı gösterilir.
+- Bakım tarihi gelen cihazlar için yönetici uyarısı gösterilir.
+- Boş ve yükleniyor durumları profesyonel hale getirildi.
+
+KURULUM
+1. Paketteki App.tsx dosyasını mobil uygulama klasöründeki App.tsx ile değiştirin.
+2. Terminalde mobil uygulama klasörüne girin.
+3. npm run typecheck
+4. git add App.tsx
+5. git commit -m "Canlı yönetici özeti ve işletme uyarılarını ekle"
+6. git push origin main
+7. npx expo start -c
+
+Not: Bu güncelleme için yeni SQL çalıştırılması gerekmez.

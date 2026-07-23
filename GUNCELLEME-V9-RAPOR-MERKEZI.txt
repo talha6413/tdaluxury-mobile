@@ -1,0 +1,21 @@
+TDA LUXURY MOBİL V9 — RAPOR MERKEZİ
+
+Yeni özellikler:
+- Yönetim ekranına Raporlar bölümü eklendi.
+- Son 30 günlük tahsilat canlı hesaplanır.
+- Son 30 günlük toplam randevu sayısı gösterilir.
+- Tamamlanan randevu ve başarı oranı gösterilir.
+- İptal edilen veya gelinmeyen randevular gösterilir.
+- Aktif müşteri sayısı gösterilir.
+- Aktif paketlerdeki toplam açık borç hesaplanır.
+
+KURULUM
+1. Paketteki App.tsx dosyasını mobil uygulama klasörüne kopyalayın.
+2. Mevcut App.tsx dosyasının üzerine yazın.
+3. npm run typecheck
+4. git add App.tsx
+5. git commit -m "Canlı yönetici rapor merkezini ekle"
+6. git push origin main
+7. npx expo start -c
+
+Bu sürüm için yeni SQL çalıştırılması gerekmez.
